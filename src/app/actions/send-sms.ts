@@ -8,6 +8,7 @@ import {
 } from "@/features/messages/send-form-state";
 import { requireUser } from "@/lib/auth/session";
 import { consoleLogger } from "@/lib/logging/logger";
+import { MANUAL_VARIABLES, type TemplateValues } from "@/lib/sms/templates";
 import { getSmsRuntimeConfig } from "@/lib/sms/config";
 import { getSmsProvider } from "@/lib/sms/provider";
 import { prismaManualSendStore } from "@/server/repositories/prisma-manual-send-store";
@@ -25,6 +26,7 @@ const schema = z.object({
     error: "Seleciona o tipo de mensagem.",
   }),
   legalBasis: z.boolean(),
+  templateId: z.string().max(40),
 });
 
 function readValues(formData: FormData): SendFormValues {
@@ -34,7 +36,19 @@ function readValues(formData: FormData): SendFormValues {
     message: String(formData.get("message") ?? ""),
     messageType: messageType === "TRANSACTIONAL" || messageType === "PROMOTIONAL" ? messageType : "",
     legalBasis: formData.get("legalBasis") === "on",
+    templateId: String(formData.get("templateId") ?? ""),
+    variables: readVariables(formData),
   };
+}
+
+/** Só aceita as variáveis manuais da whitelist (`var_date`, `var_time`, `var_place`). */
+function readVariables(formData: FormData): TemplateValues {
+  const values: TemplateValues = {};
+  for (const name of MANUAL_VARIABLES) {
+    const value = formData.get(`var_${name}`);
+    if (typeof value === "string" && value !== "") values[name] = value.slice(0, 200);
+  }
+  return values;
 }
 
 function buildDeps(): ManualSendDeps | null {
@@ -81,6 +95,8 @@ export async function sendSmsFormAction(
     messageType: parsed.data.messageType,
     legalBasisConfirmed: parsed.data.legalBasis,
     userId: user.id,
+    templateId: parsed.data.templateId || null,
+    variables: values.variables,
   };
 
   if (intent === "review") {
@@ -97,6 +113,8 @@ export async function sendSmsFormAction(
         consentStatus: preview.contact?.consentStatus ?? null,
         messageType: preview.messageType,
         segments: preview.segments,
+        renderedMessage: preview.renderedMessage,
+        templateName: preview.template?.name ?? null,
         mode: preview.mode,
         originationLabel: preview.originationLabel,
         legalBasisConfirmed: preview.legalBasisConfirmed,

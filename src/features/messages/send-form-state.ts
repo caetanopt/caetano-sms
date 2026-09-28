@@ -1,4 +1,5 @@
 import type { SmsSegmentInfo } from "@/lib/sms/encoding";
+import type { TemplateValues } from "@/lib/sms/templates";
 import type { SmsMessageType } from "@/lib/sms/types";
 
 export type SendFormValues = {
@@ -6,6 +7,10 @@ export type SendFormValues = {
   message: string;
   messageType: SmsMessageType | "";
   legalBasis: boolean;
+  /** "" = texto livre. */
+  templateId: string;
+  /** Apenas variáveis manuais (date, time, place). */
+  variables: TemplateValues;
 };
 
 export type SendReview = {
@@ -14,6 +19,8 @@ export type SendReview = {
   consentStatus: "UNKNOWN" | "OPTED_IN" | "OPTED_OUT" | null;
   messageType: SmsMessageType;
   segments: SmsSegmentInfo;
+  renderedMessage: string;
+  templateName: string | null;
   mode: "TEST" | "PRODUCTION";
   originationLabel: string;
   legalBasisConfirmed: boolean;
@@ -39,6 +46,8 @@ export const emptySendFormValues: SendFormValues = {
   message: "",
   messageType: "",
   legalBasis: false,
+  templateId: "",
+  variables: {},
 };
 
 export function initialSendFormState(requestId: string): SendFormState {

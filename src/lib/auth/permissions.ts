@@ -8,6 +8,7 @@ export type Permission =
   | "contacts:reopt-in"
   | "lists:write"
   | "lists:delete"
+  | "templates:write"
   | "sms:send";
 
 const MATRIX: Record<Permission, readonly Role[]> = {
@@ -17,6 +18,7 @@ const MATRIX: Record<Permission, readonly Role[]> = {
   "contacts:reopt-in": ["ADMIN"],
   "lists:write": ["ADMIN", "OPERATOR"],
   "lists:delete": ["ADMIN"],
+  "templates:write": ["ADMIN", "OPERATOR"],
   "sms:send": ["ADMIN", "OPERATOR"],
 };
 

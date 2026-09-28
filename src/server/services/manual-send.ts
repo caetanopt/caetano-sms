@@ -3,6 +3,13 @@ import { maskPhoneNumber, normalizePhoneNumber } from "@/lib/phone/normalize";
 import type { SmsRuntimeConfig } from "@/lib/sms/config";
 import { assertSmsLength, type SmsSegmentInfo } from "@/lib/sms/encoding";
 import { checkManualSendEligibility, type EligibilityContact } from "@/lib/sms/eligibility";
+import {
+  contactVariables,
+  describeMissing,
+  MANUAL_VARIABLES,
+  renderTemplate,
+  type TemplateValues,
+} from "@/lib/sms/templates";
 import type { SmsErrorCode, SmsMessageType, SmsProvider, SmsSendResult } from "@/lib/sms/types";
 
 // ---------------------------------------------------------------------------
@@ -10,6 +17,8 @@ import type { SmsErrorCode, SmsMessageType, SmsProvider, SmsSendResult } from "@
 // ---------------------------------------------------------------------------
 
 export type StoredContact = EligibilityContact & { id: string; name: string };
+
+export type StoredTemplate = { id: string; name: string; body: string; messageType: SmsMessageType };
 
 export type AuditEntry = {
   userId: string;
@@ -29,6 +38,7 @@ export type PendingMessageData = {
   segmentCountEstimate: number;
   provider: string;
   dryRun: boolean;
+  templateId: string | null;
   createdById: string;
 };
 
@@ -46,6 +56,7 @@ export type MessageOutcomeUpdate =
 export interface ManualSendStore {
   findContactByPhone(phoneE164: string): Promise<StoredContact | null>;
   isSuppressed(phoneE164: string): Promise<boolean>;
+  findTemplate(templateId: string): Promise<StoredTemplate | null>;
   findMessageByIdempotencyKey(key: string): Promise<{ id: string; status: string } | null>;
   /** Devolve null se já existir uma mensagem com a mesma chave de idempotência. */
   createPendingMessage(data: PendingMessageData): Promise<{ id: string } | null>;
@@ -71,10 +82,14 @@ export type ManualSendDeps = {
 export type ManualSendInput = {
   requestId: string;
   phone: string;
+  /** Texto livre. Ignorado quando `templateId` é indicado (o corpo vem da base de dados). */
   message: string;
   messageType: SmsMessageType;
   legalBasisConfirmed: boolean;
   userId: string;
+  templateId?: string | null;
+  /** Valores das variáveis manuais (date, time, place). Variáveis de contacto vêm do contacto. */
+  variables?: TemplateValues;
 };
 
 export type RejectionReason =
@@ -82,20 +97,26 @@ export type RejectionReason =
   | "INVALID_MESSAGE"
   | "OPTED_OUT"
   | "NO_CONSENT"
-  | "LEGAL_BASIS_REQUIRED";
+  | "LEGAL_BASIS_REQUIRED"
+  | "TEMPLATE_NOT_FOUND"
+  | "TEMPLATE_TYPE_MISMATCH"
+  | "TEMPLATE_VARIABLES";
 
 export type ManualSendPreview = {
   phoneE164: string;
   contact: { name: string; consentStatus: StoredContact["consentStatus"] } | null;
   messageType: SmsMessageType;
   segments: SmsSegmentInfo;
+  /** Texto final (variáveis resolvidas) que será enviado. */
+  renderedMessage: string;
+  template: { id: string; name: string } | null;
   mode: SmsRuntimeConfig["mode"];
   originationLabel: string;
   legalBasisConfirmed: boolean;
 };
 
 export type PrepareResult =
-  | { ok: true; preview: ManualSendPreview; contactId: string | null }
+  | { ok: true; preview: ManualSendPreview; contactId: string | null; templateId: string | null }
   | { ok: false; reason: RejectionReason; message: string };
 
 export type ManualSendOutcome =
@@ -125,19 +146,25 @@ export async function prepareManualSend(
     return { ok: false, reason: "INVALID_PHONE", message: "Número de telefone inválido." };
   }
 
-  if (input.message.trim().length === 0) {
-    return { ok: false, reason: "INVALID_MESSAGE", message: "A mensagem está vazia." };
+  let template: StoredTemplate | null = null;
+  if (input.templateId) {
+    template = await deps.store.findTemplate(input.templateId);
+    if (!template) {
+      return { ok: false, reason: "TEMPLATE_NOT_FOUND", message: "O template selecionado já não existe." };
+    }
+    // Nunca converter o tipo definido no template (CLAUDE.md §11).
+    if (template.messageType !== input.messageType) {
+      return {
+        ok: false,
+        reason: "TEMPLATE_TYPE_MISMATCH",
+        message: `O template "${template.name}" é ${template.messageType === "PROMOTIONAL" ? "promocional" : "transacional"}: o tipo de mensagem tem de ser o mesmo.`,
+      };
+    }
   }
+  const body = template ? template.body : input.message;
 
-  let segments: SmsSegmentInfo;
-  try {
-    segments = assertSmsLength(input.message);
-  } catch (error) {
-    return {
-      ok: false,
-      reason: "INVALID_MESSAGE",
-      message: error instanceof Error ? error.message : "Mensagem inválida.",
-    };
+  if (body.trim().length === 0) {
+    return { ok: false, reason: "INVALID_MESSAGE", message: "A mensagem está vazia." };
   }
 
   const [contact, suppressed] = await Promise.all([
@@ -154,14 +181,46 @@ export async function prepareManualSend(
     return { ok: false, reason: eligibility.reason, message: eligibility.message };
   }
 
+  // Só as variáveis manuais vêm do operador; as de contacto vêm sempre do contacto.
+  const manualValues = Object.fromEntries(
+    MANUAL_VARIABLES.flatMap((name) => (input.variables?.[name] !== undefined ? [[name, input.variables[name]]] : [])),
+  ) as TemplateValues;
+  const rendered = renderTemplate(body, { ...manualValues, ...contactVariables(contact) });
+  if (!rendered.ok) {
+    const parts: string[] = [];
+    if (rendered.missing.length > 0) {
+      const contactMissing = rendered.missing.some((name) => !MANUAL_VARIABLES.includes(name));
+      parts.push(
+        `Faltam valores para ${describeMissing(rendered.missing)}` +
+          (contactMissing && !contact ? " — o número não corresponde a um contacto registado." : "."),
+      );
+    }
+    parts.push(...rendered.errors);
+    return { ok: false, reason: "TEMPLATE_VARIABLES", message: parts.join(" ") };
+  }
+
+  let segments: SmsSegmentInfo;
+  try {
+    segments = assertSmsLength(rendered.text);
+  } catch (error) {
+    return {
+      ok: false,
+      reason: "INVALID_MESSAGE",
+      message: error instanceof Error ? error.message : "Mensagem inválida.",
+    };
+  }
+
   return {
     ok: true,
     contactId: contact?.id ?? null,
+    templateId: template?.id ?? null,
     preview: {
       phoneE164,
       contact: contact ? { name: contact.name, consentStatus: contact.consentStatus } : null,
       messageType: input.messageType,
       segments,
+      renderedMessage: rendered.text,
+      template: template ? { id: template.id, name: template.name } : null,
       mode: deps.config.mode,
       originationLabel: deps.config.originationLabel,
       legalBasisConfirmed: input.legalBasisConfirmed,
@@ -194,7 +253,8 @@ export async function executeManualSend(
   const prepared = await prepareManualSend(input, deps);
   if (!prepared.ok) {
     logger.log("info", "sms.send.blocked", { userId: input.userId, errorCode: prepared.reason });
-    if (prepared.reason === "OPTED_OUT" || prepared.reason === "NO_CONSENT" || prepared.reason === "LEGAL_BASIS_REQUIRED") {
+    const audited: RejectionReason[] = ["OPTED_OUT", "NO_CONSENT", "LEGAL_BASIS_REQUIRED", "TEMPLATE_TYPE_MISMATCH"];
+    if (audited.includes(prepared.reason)) {
       await store.writeAudit({
         userId: input.userId,
         action: "SMS_SEND_BLOCKED",
@@ -205,7 +265,7 @@ export async function executeManualSend(
     return { kind: "rejected", reason: prepared.reason, message: prepared.message };
   }
 
-  const { preview, contactId } = prepared;
+  const { preview, contactId, templateId } = prepared;
   const maskedDestination = maskPhoneNumber(preview.phoneE164);
 
   let provider: SmsProvider;
@@ -227,11 +287,12 @@ export async function executeManualSend(
     contactId,
     destinationPhoneE164: preview.phoneE164,
     messageType: preview.messageType,
-    body: input.message,
+    body: preview.renderedMessage,
     encodingEstimate: preview.segments.encoding,
     segmentCountEstimate: preview.segments.segments,
     provider: config.provider,
     dryRun: config.mode === "TEST",
+    templateId,
     createdById: input.userId,
   });
   if (!created) {
@@ -253,7 +314,7 @@ export async function executeManualSend(
   try {
     result = await provider.send({
       destinationPhoneNumber: preview.phoneE164,
-      messageBody: input.message,
+      messageBody: preview.renderedMessage,
       messageType: preview.messageType,
       dryRun: config.dryRun,
       context: { internalMessageId: created.id, source: "manual" },

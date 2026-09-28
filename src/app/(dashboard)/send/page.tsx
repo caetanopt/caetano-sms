@@ -1,5 +1,6 @@
 import { initialSendFormState } from "@/features/messages/send-form-state";
 import { requireUser } from "@/lib/auth/session";
+import { prisma } from "@/lib/db/prisma";
 import { getSmsRuntimeConfig } from "@/lib/sms/config";
 import { SendForm } from "./send-form";
 
@@ -14,6 +15,13 @@ function readMode() {
 export default async function SendPage() {
   const user = await requireUser();
   const mode = readMode();
+  const templates =
+    user.role === "VIEWER"
+      ? []
+      : await prisma.smsTemplate.findMany({
+          orderBy: { name: "asc" },
+          select: { id: true, name: true, body: true, messageType: true },
+        });
 
   return (
     <div className="max-w-3xl">
@@ -39,7 +47,7 @@ export default async function SendPage() {
           O teu perfil (apenas leitura) não permite enviar SMS.
         </p>
       ) : mode ? (
-        <SendForm initialState={initialSendFormState(crypto.randomUUID())} />
+        <SendForm initialState={initialSendFormState(crypto.randomUUID())} templates={templates} />
       ) : null}
     </div>
   );

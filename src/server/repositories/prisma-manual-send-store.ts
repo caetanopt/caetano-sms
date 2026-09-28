@@ -25,6 +25,13 @@ export const prismaManualSendStore: ManualSendStore = {
     return entry !== null;
   },
 
+  async findTemplate(templateId) {
+    return prisma.smsTemplate.findUnique({
+      where: { id: templateId },
+      select: { id: true, name: true, body: true, messageType: true },
+    });
+  },
+
   async findMessageByIdempotencyKey(key) {
     return prisma.smsMessage.findUnique({
       where: { idempotencyKey: key },

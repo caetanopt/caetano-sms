@@ -47,6 +47,7 @@ model User {
   messages      SmsMessage[]
   auditLogs     AuditLog[]
   consentEvents ConsentEvent[]
+  templates     SmsTemplate[]
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 }
@@ -143,6 +144,9 @@ model SmsMessage {
   sentAt               DateTime?
   deliveredAt          DateTime?
   failedAt             DateTime?
+  /// Template usado (o corpo final renderizado fica em `body`).
+  templateId           String?
+  template             SmsTemplate?     @relation(fields: [templateId], references: [id], onDelete: SetNull)
   createdById          String
   createdBy            User             @relation(fields: [createdById], references: [id])
   createdAt            DateTime         @default(now())
@@ -165,4 +169,17 @@ model AuditLog {
 
   @@index([createdAt])
   @@index([userId])
+}
+
+/// Template de SMS com variáveis de uma whitelist explícita (ver src/lib/sms/templates.ts).
+model SmsTemplate {
+  id          String       @id @default(cuid())
+  name        String       @unique
+  body        String
+  messageType MessageType
+  createdById String
+  createdBy   User         @relation(fields: [createdById], references: [id])
+  messages    SmsMessage[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 }

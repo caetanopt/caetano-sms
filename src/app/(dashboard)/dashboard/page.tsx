@@ -52,7 +52,7 @@ export default async function DashboardPage() {
         <h2 className="text-lg font-semibold">Estado do MVP</h2>
         <p className="mt-2 text-sm text-slate-600">
           Inclui autenticação, contactos com histórico de consentimento, suppression list, listas, importação CSV,
-          envio individual, histórico, auditoria e providers fake/AWS. Templates, campanhas e delivery receipts
+          templates, envio individual, histórico, auditoria e providers fake/AWS. Campanhas e delivery receipts
           ficam para as fases seguintes.
         </p>
       </div>

@@ -10,6 +10,7 @@ Starter para uma aplicação web de envio de SMS através do **AWS End User Mess
 - roles ADMIN / OPERATOR / VIEWER
 - contactos com histórico de consentimento, opt-out e suppression list local
 - listas de contactos e importação CSV com validação
+- templates com variáveis de whitelist e pré-visualização
 - envio individual
 - `FakeSmsProvider` para desenvolvimento seguro
 - `AwsSmsProvider` com AWS SDK v3
@@ -85,6 +86,28 @@ Joao,+351913456789,UNKNOWN,legacy-import
 - contactos existentes nunca sobem de consentimento; números na suppression list ficam em opt-out;
 - linhas inválidas e duplicados (após normalização E.164) são rejeitados e listados;
 - reimportar o mesmo ficheiro não cria duplicados.
+
+## Templates
+
+`/templates` permite criar, editar e eliminar templates com tipo de mensagem obrigatório e
+pré-visualização com contador de partes. Motor em `src/lib/sms/templates.ts`.
+
+Variáveis permitidas (whitelist):
+
+| Variável | Origem |
+|---|---|
+| `{{firstName}}`, `{{lastName}}`, `{{fullName}}` | contacto registado com o número |
+| `{{date}}`, `{{time}}`, `{{place}}` | indicadas pelo operador no envio |
+
+- nunca há `eval` nem execução de código: substituição textual numa única passagem (um valor com
+  `{{...}}` nunca é expandido); variáveis desconhecidas ou placeholders mal formados são rejeitados;
+- telefone e email **não** são variáveis, para não pôr PII desnecessária no texto;
+- variável em falta **bloqueia o envio** e indica o campo (e, nas campanhas, o contacto);
+- ao usar um template, o texto e o tipo vêm da base de dados: o tipo não pode ser alterado
+  (nunca converter promocional em transacional) e a tentativa é auditada;
+- as partes são calculadas sobre o texto final; nomes com ã, õ, ç ou emoji passam a Unicode
+  (70 caracteres por parte). O próprio texto "marcação" já obriga a Unicode;
+- eliminar um template mantém as mensagens enviadas (com o texto final).
 
 ## Validação
 
@@ -212,14 +235,13 @@ CLAUDE.md
 
 O `CLAUDE.md` contém o plano completo. A evolução recomendada é:
 
-1. templates (Fase 4);
-2. campanhas e idempotência (Fase 5);
-3. gestão de utilizadores pela UI;
-4. SQS para jobs;
-5. Configuration Set + SNS/SQS para delivery receipts;
-6. rate limiting e limites por identidade/país;
-7. E2E com Playwright;
-8. hardening e deployment.
+1. campanhas e idempotência (Fase 5);
+2. gestão de utilizadores pela UI;
+3. SQS para jobs;
+4. Configuration Set + SNS/SQS para delivery receipts;
+5. rate limiting e limites por identidade/país;
+6. E2E com Playwright;
+7. hardening e deployment.
 
 ## Segurança
 

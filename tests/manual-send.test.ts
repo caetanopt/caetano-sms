@@ -13,6 +13,7 @@ import {
   type MessageOutcomeUpdate,
   type PendingMessageData,
   type StoredContact,
+  type StoredTemplate,
 } from "../src/server/services/manual-send";
 
 type StoredMessage = PendingMessageData & {
@@ -24,7 +25,11 @@ type StoredMessage = PendingMessageData & {
   failedAt?: Date | null;
 };
 
-function createMemoryStore(contacts: StoredContact[] = [], suppressedPhones: string[] = []) {
+function createMemoryStore(
+  contacts: StoredContact[] = [],
+  suppressedPhones: string[] = [],
+  templates: StoredTemplate[] = [],
+) {
   const messages: StoredMessage[] = [];
   const suppressed = new Set(suppressedPhones);
   const audits: AuditEntry[] = [];
@@ -35,6 +40,9 @@ function createMemoryStore(contacts: StoredContact[] = [], suppressedPhones: str
   const store: ManualSendStore = {
     async findContactByPhone(phone) {
       return contactsByPhone.get(phone) ?? null;
+    },
+    async findTemplate(id) {
+      return templates.find((template) => template.id === id) ?? null;
     },
     async isSuppressed(phone) {
       return suppressed.has(phone);
@@ -79,9 +87,15 @@ class RecordingProvider implements SmsProvider {
 }
 
 function setup(
-  options: { contacts?: StoredContact[]; suppressed?: string[]; scenario?: FakeScenario; provider?: SmsProvider } = {},
+  options: {
+    contacts?: StoredContact[];
+    suppressed?: string[];
+    templates?: StoredTemplate[];
+    scenario?: FakeScenario;
+    provider?: SmsProvider;
+  } = {},
 ) {
-  const memory = createMemoryStore(options.contacts, options.suppressed);
+  const memory = createMemoryStore(options.contacts, options.suppressed, options.templates);
   const provider = options.provider ?? new RecordingProvider(new FakeSmsProvider({ scenario: options.scenario }));
   const { logger, entries } = createMemoryLogger();
   const deps: ManualSendDeps = {
@@ -282,6 +296,106 @@ describe("executeManualSend", () => {
     const { deps, suppressed } = setup({ scenario: "opt_out" });
     await executeManualSend(request(), deps);
     expect(suppressed.has("+351912345678")).toBe(true);
+  });
+
+  describe("with templates", () => {
+    const reminder: StoredTemplate = {
+      id: "t1",
+      name: "Lembrete",
+      body: "Olá {{firstName}}, a sua marcação é dia {{date}} às {{time}}.",
+      messageType: "TRANSACTIONAL",
+    };
+    const promo: StoredTemplate = { id: "t2", name: "Promo", body: "Promo {{place}}!", messageType: "PROMOTIONAL" };
+
+    it("renders contact and manual variables and stores the final text and templateId", async () => {
+      const { deps, messages, provider } = setup({ contacts: [optedIn], templates: [reminder] });
+      const outcome = await executeManualSend(
+        request({ templateId: "t1", message: "ignorado", variables: { date: "12/10", time: "14:30" } }),
+        deps,
+      );
+      expect(outcome.kind).toBe("accepted");
+      expect(messages[0]).toMatchObject({
+        body: "Olá Maria, a sua marcação é dia 12/10 às 14:30.",
+        templateId: "t1",
+      });
+      expect((provider as RecordingProvider).calls[0].messageBody).toBe("Olá Maria, a sua marcação é dia 12/10 às 14:30.");
+    });
+
+    it("uses the template body from the store, never the text sent by the browser", async () => {
+      const { deps, messages } = setup({ contacts: [optedIn], templates: [reminder] });
+      await executeManualSend(
+        request({ templateId: "t1", message: "Texto alterado no browser", variables: { date: "1", time: "2" } }),
+        deps,
+      );
+      expect(messages[0].body).not.toContain("alterado");
+    });
+
+    it("blocks and names the missing field, including contact variables for unknown numbers", async () => {
+      const { deps, provider, messages } = setup({ templates: [reminder] });
+      const outcome = await executeManualSend(request({ templateId: "t1", variables: { date: "12/10" } }), deps);
+      expect(outcome).toMatchObject({ kind: "rejected", reason: "TEMPLATE_VARIABLES" });
+      if (outcome.kind === "rejected") {
+        expect(outcome.message).toContain("{{firstName}} (Primeiro nome)");
+        expect(outcome.message).toContain("{{time}} (Hora)");
+        expect(outcome.message).toMatch(/não corresponde a um contacto/);
+      }
+      expect(messages).toHaveLength(0);
+      expect((provider as RecordingProvider).calls).toHaveLength(0);
+    });
+
+    it("never lets the browser override contact variables", async () => {
+      const { deps, messages } = setup({ contacts: [optedIn], templates: [reminder] });
+      await executeManualSend(
+        request({ templateId: "t1", variables: { firstName: "Hacker", date: "1", time: "2" } as never }),
+        deps,
+      );
+      expect(messages[0].body).toContain("Olá Maria");
+    });
+
+    it("rejects a message type different from the template and audits it", async () => {
+      const { deps, audits } = setup({ contacts: [optedIn], templates: [promo] });
+      const outcome = await executeManualSend(
+        request({ templateId: "t2", messageType: "TRANSACTIONAL", variables: { place: "Lisboa" } }),
+        deps,
+      );
+      expect(outcome).toMatchObject({ kind: "rejected", reason: "TEMPLATE_TYPE_MISMATCH" });
+      expect(audits[0]).toMatchObject({ action: "SMS_SEND_BLOCKED", metadata: { reason: "TEMPLATE_TYPE_MISMATCH" } });
+    });
+
+    it("still applies consent rules to templated promotional messages", async () => {
+      const unknown: StoredContact = { id: "c_unk", name: "Ana", consentStatus: "UNKNOWN", optedOutAt: null };
+      const { deps } = setup({ contacts: [unknown], templates: [promo] });
+      const outcome = await executeManualSend(
+        request({ templateId: "t2", messageType: "PROMOTIONAL", variables: { place: "Lisboa" } }),
+        deps,
+      );
+      expect(outcome).toMatchObject({ kind: "rejected", reason: "NO_CONSENT" });
+    });
+
+    it("rejects unknown templates", async () => {
+      const { deps } = setup();
+      expect(await executeManualSend(request({ templateId: "missing" }), deps)).toMatchObject({
+        kind: "rejected",
+        reason: "TEMPLATE_NOT_FOUND",
+      });
+    });
+
+    it("renders placeholders in free text too and blocks unknown ones", async () => {
+      const { deps, messages } = setup({ contacts: [optedIn] });
+      expect(await executeManualSend(request({ message: "Olá {{nome}}" }), deps)).toMatchObject({
+        kind: "rejected",
+        reason: "TEMPLATE_VARIABLES",
+      });
+      await executeManualSend(request({ message: "Olá {{firstName}}" }), deps);
+      expect(messages[0].body).toBe("Olá Maria");
+    });
+
+    it("computes segments on the rendered text", async () => {
+      const long: StoredTemplate = { id: "t3", name: "Longo", body: "A".repeat(150) + " {{place}}", messageType: "TRANSACTIONAL" };
+      const { deps } = setup({ templates: [long] });
+      const prepared = await prepareManualSend(request({ templateId: "t3", variables: { place: "Loja de Lisboa" } }), deps);
+      expect(prepared).toMatchObject({ ok: true, preview: { segments: { segments: 2 } } });
+    });
   });
 
   it("never logs or audits the full phone number or message body", async () => {

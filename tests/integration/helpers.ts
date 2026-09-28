@@ -3,7 +3,7 @@ import type { Actor } from "@/server/services/contacts";
 
 export async function resetDatabase() {
   await prisma.$executeRawUnsafe(
-    'TRUNCATE "ContactListMember", "ContactList", "ConsentEvent", "SuppressionEntry", "SmsMessage", "AuditLog", "Contact", "User" CASCADE',
+    'TRUNCATE "ContactListMember", "ContactList", "ConsentEvent", "SuppressionEntry", "SmsMessage", "SmsTemplate", "AuditLog", "Contact", "User" CASCADE',
   );
 }
 

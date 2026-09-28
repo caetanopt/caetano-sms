@@ -8,7 +8,7 @@ export default async function MessagesPage() {
   const messages = await prisma.smsMessage.findMany({
     orderBy: { createdAt: "desc" },
     take: 100,
-    include: { createdBy: { select: { name: true } } },
+    include: { createdBy: { select: { name: true } }, template: { select: { name: true } } },
   });
 
   return (
@@ -33,7 +33,10 @@ export default async function MessagesPage() {
               <tr key={message.id} className="border-t border-slate-100">
                 <td className="px-4 py-3">{message.createdAt.toLocaleString("pt-PT", { timeZone: "Europe/Lisbon" })}</td>
                 <td className="px-4 py-3">{maskPhoneNumber(message.destinationPhoneE164)}</td>
-                <td className="px-4 py-3">{message.messageType}</td>
+                <td className="px-4 py-3">
+                  {message.messageType}
+                  {message.template ? <div className="text-xs text-slate-500">{message.template.name}</div> : null}
+                </td>
                 <td className="px-4 py-3">{message.segmentCountEstimate ?? "-"}</td>
                 <td className="px-4 py-3">
                   <span className="font-medium">{smsStatusLabel(message.status)}</span>
