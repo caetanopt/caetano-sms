@@ -38,58 +38,115 @@ enum SmsMessageStatus {
 }
 
 model User {
-  id           String       @id @default(cuid())
-  name         String
-  email        String       @unique
-  passwordHash String
-  role         UserRole     @default(OPERATOR)
-  isActive     Boolean      @default(true)
-  messages     SmsMessage[]
-  auditLogs    AuditLog[]
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
+  id            String         @id @default(cuid())
+  name          String
+  email         String         @unique
+  passwordHash  String
+  role          UserRole       @default(OPERATOR)
+  isActive      Boolean        @default(true)
+  messages      SmsMessage[]
+  auditLogs     AuditLog[]
+  consentEvents ConsentEvent[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 }
 
 model Contact {
-  id            String        @id @default(cuid())
+  id            String              @id @default(cuid())
   name          String
-  phoneE164     String        @unique
+  phoneE164     String              @unique
   email         String?
-  consentStatus ConsentStatus @default(UNKNOWN)
+  consentStatus ConsentStatus       @default(UNKNOWN)
   consentAt     DateTime?
   consentSource String?
   optedOutAt    DateTime?
   notes         String?
   messages      SmsMessage[]
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  lists         ContactListMember[]
+  consentEvents ConsentEvent[]
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  @@index([consentStatus])
+  @@index([name])
+}
+
+/// Histórico imutável de alterações de consentimento (CLAUDE.md §12).
+model ConsentEvent {
+  id           String        @id @default(cuid())
+  contactId    String
+  contact      Contact       @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  status       ConsentStatus
+  /// Origem do consentimento (ex.: website, loja, contrato, csv-import).
+  source       String
+  /// Finalidade (ex.: marketing, notificações de serviço).
+  purpose      String?
+  /// Texto ou versão do texto de consentimento, quando aplicável.
+  textVersion  String?
+  /// Processo que registou: manual | csv-import | provider.
+  process      String
+  recordedById String?
+  recordedBy   User?         @relation(fields: [recordedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime      @default(now())
+
+  @@index([contactId, createdAt])
+}
+
+/// Suppression list local: números que nunca podem receber SMS, mesmo que o
+/// contacto seja eliminado.
+model SuppressionEntry {
+  id        String   @id @default(cuid())
+  phoneE164 String   @unique
+  /// manual | csv-import | provider
+  source    String
+  createdAt DateTime @default(now())
+}
+
+model ContactList {
+  id          String              @id @default(cuid())
+  name        String              @unique
+  description String?
+  members     ContactListMember[]
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+}
+
+model ContactListMember {
+  listId    String
+  list      ContactList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  contactId String
+  contact   Contact     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  createdAt DateTime    @default(now())
+
+  @@id([listId, contactId])
+  @@index([contactId])
 }
 
 model SmsMessage {
-  id                    String           @id @default(cuid())
-  idempotencyKey        String           @unique
-  awsMessageId          String?          @unique
-  contactId             String?
-  contact               Contact?         @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  destinationPhoneE164  String
-  messageType           MessageType
-  body                  String
-  encodingEstimate      String?
-  segmentCountEstimate  Int?
-  status                SmsMessageStatus @default(PENDING)
-  provider              String
-  dryRun                Boolean          @default(false)
-  errorCode             String?
-  errorMessage          String?
-  providerErrorName     String?
-  providerRequestId     String?
-  sentAt                DateTime?
-  deliveredAt           DateTime?
-  failedAt              DateTime?
-  createdById           String
-  createdBy             User             @relation(fields: [createdById], references: [id])
-  createdAt             DateTime         @default(now())
-  updatedAt             DateTime         @updatedAt
+  id                   String           @id @default(cuid())
+  idempotencyKey       String           @unique
+  awsMessageId         String?          @unique
+  contactId            String?
+  contact              Contact?         @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  destinationPhoneE164 String
+  messageType          MessageType
+  body                 String
+  encodingEstimate     String?
+  segmentCountEstimate Int?
+  status               SmsMessageStatus @default(PENDING)
+  provider             String
+  dryRun               Boolean          @default(false)
+  errorCode            String?
+  errorMessage         String?
+  providerErrorName    String?
+  providerRequestId    String?
+  sentAt               DateTime?
+  deliveredAt          DateTime?
+  failedAt             DateTime?
+  createdById          String
+  createdBy            User             @relation(fields: [createdById], references: [id])
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
 
   @@index([createdAt])
   @@index([status])

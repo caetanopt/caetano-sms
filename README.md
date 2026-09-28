@@ -8,7 +8,8 @@ Starter para uma aplicação web de envio de SMS através do **AWS End User Mess
 - PostgreSQL + Prisma ORM 7
 - autenticação local com sessão HTTP-only
 - roles ADMIN / OPERATOR / VIEWER
-- contactos + consentimento/opt-out
+- contactos com histórico de consentimento, opt-out e suppression list local
+- listas de contactos e importação CSV com validação
 - envio individual
 - `FakeSmsProvider` para desenvolvimento seguro
 - `AwsSmsProvider` com AWS SDK v3
@@ -17,7 +18,7 @@ Starter para uma aplicação web de envio de SMS através do **AWS End User Mess
 - normalização E.164
 - cálculo de segmentos GSM/UCS-2
 - Docker Compose para PostgreSQL
-- testes Vitest
+- testes Vitest (unitários e de integração com PostgreSQL)
 - endpoint `/api/health`
 
 O envio real está **desativado por defeito**: `SMS_PROVIDER=fake` e `AWS_SMS_DRY_RUN=true`.
@@ -50,6 +51,41 @@ Notas:
 
 Abrir `http://localhost:3000` e iniciar sessão com `ADMIN_EMAIL` e `ADMIN_PASSWORD`.
 
+## Contactos, consentimento e listas
+
+- `/contacts`: pesquisa (nome ou telefone), filtro por consentimento, paginação e criação.
+- `/contacts/[id]`: edição, histórico de consentimento, opt-in/opt-out, listas e eliminação (ADMIN).
+- `/contacts/import`: importação CSV com preview, mapeamento de colunas, validação e relatório.
+- `/lists`: listas/grupos com contagens de elegibilidade (opt-in / sem consentimento / opt-out).
+
+Regras (ver `src/features/contacts/consent.ts` e `src/features/contacts/import.ts`):
+
+- cada alteração de consentimento cria um `ConsentEvent` imutável: estado, origem, finalidade,
+  versão do texto, processo (`manual`, `csv-import`, `provider`) e utilizador;
+- opt-in exige origem e finalidade; não existe transição manual para "desconhecido";
+- opt-out adiciona o número à **suppression list** (`SuppressionEntry`), que é verificada em todos os
+  envios, mesmo para números sem contacto, e **não** é limpa quando o contacto é eliminado;
+- só ADMIN pode registar um novo opt-in num número em opt-out ou eliminar contactos;
+- VIEWER só tem acesso de leitura e vê os números mascarados.
+
+### Importação CSV
+
+Formato recomendado (vírgula ou ponto e vírgula; UTF-8 ou Windows-1252; máx. 5000 linhas / 2 MB):
+
+```csv
+name,phone,consent_status,consent_source
+Maria,+351912345678,OPTED_IN,website
+Joao,+351913456789,UNKNOWN,legacy-import
+```
+
+- a presença de um número no ficheiro **nunca** é consentimento;
+- `OPTED_IN` só é importado se o operador confirmar que o consentimento está documentado **e** a
+  linha tiver origem; caso contrário fica `UNKNOWN` (com aviso no relatório);
+- `OPTED_OUT` é sempre aplicado, inclusive a contactos já existentes;
+- contactos existentes nunca sobem de consentimento; números na suppression list ficam em opt-out;
+- linhas inválidas e duplicados (após normalização E.164) são rejeitados e listados;
+- reimportar o mesmo ficheiro não cria duplicados.
+
 ## Validação
 
 ```bash
@@ -63,6 +99,15 @@ Ou:
 
 ```bash
 pnpm validate
+```
+
+Testes de integração (PostgreSQL real, base de dados **separada**):
+
+```bash
+# docker compose cria sms_app_test na primeira inicialização; caso contrário:
+# createdb -O smsapp sms_app_test
+TEST_DATABASE_URL=postgresql://smsapp:smsapp@localhost:5432/sms_app_test
+pnpm test:integration   # aplica as migrações e apaga os dados dessa base de dados
 ```
 
 ## Envio em modo fake
@@ -167,15 +212,14 @@ CLAUDE.md
 
 O `CLAUDE.md` contém o plano completo. A evolução recomendada é:
 
-1. melhorar gestão de utilizadores e autorização;
-2. listas e importação CSV;
-3. templates;
-4. campanhas e idempotência;
-5. SQS para jobs;
-6. Configuration Set + SNS/SQS para delivery receipts;
-7. rate limiting e limites por identidade/país;
-8. E2E com Playwright;
-9. hardening e deployment.
+1. templates (Fase 4);
+2. campanhas e idempotência (Fase 5);
+3. gestão de utilizadores pela UI;
+4. SQS para jobs;
+5. Configuration Set + SNS/SQS para delivery receipts;
+6. rate limiting e limites por identidade/país;
+7. E2E com Playwright;
+8. hardening e deployment.
 
 ## Segurança
 

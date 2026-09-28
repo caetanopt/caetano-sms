@@ -45,11 +45,13 @@ export type MessageOutcomeUpdate =
 
 export interface ManualSendStore {
   findContactByPhone(phoneE164: string): Promise<StoredContact | null>;
+  isSuppressed(phoneE164: string): Promise<boolean>;
   findMessageByIdempotencyKey(key: string): Promise<{ id: string; status: string } | null>;
   /** Devolve null se já existir uma mensagem com a mesma chave de idempotência. */
   createPendingMessage(data: PendingMessageData): Promise<{ id: string } | null>;
   completeMessage(id: string, update: MessageOutcomeUpdate, audit: AuditEntry): Promise<void>;
-  markContactOptedOutByProvider(contactId: string, audit: AuditEntry): Promise<void>;
+  /** Adiciona o número à suppression list e marca o contacto (se existir) em opt-out. */
+  recordProviderOptOut(phoneE164: string, contactId: string | null, audit: AuditEntry): Promise<void>;
   writeAudit(entry: AuditEntry): Promise<void>;
 }
 
@@ -138,9 +140,13 @@ export async function prepareManualSend(
     };
   }
 
-  const contact = await deps.store.findContactByPhone(phoneE164);
+  const [contact, suppressed] = await Promise.all([
+    deps.store.findContactByPhone(phoneE164),
+    deps.store.isSuppressed(phoneE164),
+  ]);
   const eligibility = checkManualSendEligibility({
     contact,
+    suppressed,
     messageType: input.messageType,
     legalBasisConfirmed: input.legalBasisConfirmed,
   });
@@ -324,14 +330,14 @@ export async function executeManualSend(
     },
   );
 
-  if (result.errorCode === "OPTED_OUT" && contactId) {
+  if (result.errorCode === "OPTED_OUT") {
     // Suppression list local: refletir o opt-out comunicado pelo fornecedor.
-    await store.markContactOptedOutByProvider(contactId, {
+    await store.recordProviderOptOut(preview.phoneE164, contactId, {
       userId: input.userId,
       action: "CONTACT_OPTED_OUT_BY_PROVIDER",
-      entityType: "Contact",
-      entityId: contactId,
-      metadata: { messageId: created.id, provider: config.provider },
+      entityType: contactId ? "Contact" : "SuppressionEntry",
+      entityId: contactId ?? undefined,
+      metadata: { messageId: created.id, provider: config.provider, destination: maskedDestination },
     });
   }
 

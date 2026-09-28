@@ -20,6 +20,11 @@ export const prismaManualSendStore: ManualSendStore = {
     });
   },
 
+  async isSuppressed(phoneE164) {
+    const entry = await prisma.suppressionEntry.findUnique({ where: { phoneE164 }, select: { id: true } });
+    return entry !== null;
+  },
+
   async findMessageByIdempotencyKey(key) {
     return prisma.smsMessage.findUnique({
       where: { idempotencyKey: key },
@@ -49,13 +54,31 @@ export const prismaManualSendStore: ManualSendStore = {
     ]);
   },
 
-  async markContactOptedOutByProvider(contactId, audit) {
+  async recordProviderOptOut(phoneE164, contactId, audit) {
     await prisma.$transaction(async (tx) => {
-      const { count } = await tx.contact.updateMany({
-        where: { id: contactId, optedOutAt: null },
-        data: { consentStatus: ConsentStatus.OPTED_OUT, optedOutAt: new Date() },
+      await tx.suppressionEntry.upsert({
+        where: { phoneE164 },
+        create: { phoneE164, source: "provider" },
+        update: {},
       });
-      if (count > 0) await tx.auditLog.create({ data: auditData(audit) });
+      if (contactId) {
+        const { count } = await tx.contact.updateMany({
+          where: { id: contactId, optedOutAt: null },
+          data: { consentStatus: ConsentStatus.OPTED_OUT, optedOutAt: new Date(), consentSource: "provider" },
+        });
+        if (count > 0) {
+          await tx.consentEvent.create({
+            data: {
+              contactId,
+              status: ConsentStatus.OPTED_OUT,
+              source: "provider",
+              process: "provider",
+              recordedById: audit.userId,
+            },
+          });
+        }
+      }
+      await tx.auditLog.create({ data: auditData(audit) });
     });
   },
 

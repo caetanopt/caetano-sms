@@ -19,18 +19,20 @@ export function isOptedOut(contact: EligibilityContact) {
 
 /**
  * Regras de envio individual:
- * - opt-out bloqueia sempre, qualquer que seja o tipo de mensagem;
+ * - opt-out ou suppression list bloqueiam sempre, qualquer que seja o tipo de mensagem;
  * - promocional para contacto conhecido exige OPTED_IN;
  * - promocional para número desconhecido exige confirmação explícita de base legal.
  */
 export function checkManualSendEligibility(input: {
   contact: EligibilityContact | null;
+  /** O número consta da suppression list local (mesmo sem contacto). */
+  suppressed?: boolean;
   messageType: SmsMessageType;
   legalBasisConfirmed: boolean;
 }): ManualSendEligibility {
   const { contact, messageType, legalBasisConfirmed } = input;
 
-  if (contact && isOptedOut(contact)) {
+  if (input.suppressed || (contact && isOptedOut(contact))) {
     return { ok: false, reason: "OPTED_OUT", message: "Este contacto está em opt-out." };
   }
 

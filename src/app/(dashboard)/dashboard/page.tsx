@@ -51,8 +51,9 @@ export default async function DashboardPage() {
       <div className="mt-8 rounded-xl border border-slate-200 bg-white p-6">
         <h2 className="text-lg font-semibold">Estado do MVP</h2>
         <p className="mt-2 text-sm text-slate-600">
-          O starter inclui autenticação, contactos, envio individual, histórico, auditoria e providers fake/AWS.
-          Campanhas, listas, filas e delivery receipts ficam preparadas para a fase seguinte.
+          Inclui autenticação, contactos com histórico de consentimento, suppression list, listas, importação CSV,
+          envio individual, histórico, auditoria e providers fake/AWS. Templates, campanhas e delivery receipts
+          ficam para as fases seguintes.
         </p>
       </div>
     </div>

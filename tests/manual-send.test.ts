@@ -24,8 +24,9 @@ type StoredMessage = PendingMessageData & {
   failedAt?: Date | null;
 };
 
-function createMemoryStore(contacts: StoredContact[] = []) {
+function createMemoryStore(contacts: StoredContact[] = [], suppressedPhones: string[] = []) {
   const messages: StoredMessage[] = [];
+  const suppressed = new Set(suppressedPhones);
   const audits: AuditEntry[] = [];
   const contactsByPhone = new Map<string, StoredContact>();
   const phones = ["+351912345678", "+351913456789", "+351914567890"];
@@ -34,6 +35,9 @@ function createMemoryStore(contacts: StoredContact[] = []) {
   const store: ManualSendStore = {
     async findContactByPhone(phone) {
       return contactsByPhone.get(phone) ?? null;
+    },
+    async isSuppressed(phone) {
+      return suppressed.has(phone);
     },
     async findMessageByIdempotencyKey(key) {
       return messages.find((message) => message.idempotencyKey === key) ?? null;
@@ -48,20 +52,21 @@ function createMemoryStore(contacts: StoredContact[] = []) {
       Object.assign(messages.find((message) => message.id === id)!, update satisfies MessageOutcomeUpdate);
       audits.push(audit);
     },
-    async markContactOptedOutByProvider(contactId, audit) {
+    async recordProviderOptOut(phone, contactId, audit) {
+      suppressed.add(phone);
       for (const contact of contactsByPhone.values()) {
         if (contact.id === contactId && contact.optedOutAt === null) {
           contact.optedOutAt = new Date();
           contact.consentStatus = "OPTED_OUT";
-          audits.push(audit);
         }
       }
+      audits.push(audit);
     },
     async writeAudit(entry) {
       audits.push(entry);
     },
   };
-  return { store, messages, audits };
+  return { store, messages, audits, suppressed };
 }
 
 class RecordingProvider implements SmsProvider {
@@ -73,8 +78,10 @@ class RecordingProvider implements SmsProvider {
   }
 }
 
-function setup(options: { contacts?: StoredContact[]; scenario?: FakeScenario; provider?: SmsProvider } = {}) {
-  const memory = createMemoryStore(options.contacts);
+function setup(
+  options: { contacts?: StoredContact[]; suppressed?: string[]; scenario?: FakeScenario; provider?: SmsProvider } = {},
+) {
+  const memory = createMemoryStore(options.contacts, options.suppressed);
   const provider = options.provider ?? new RecordingProvider(new FakeSmsProvider({ scenario: options.scenario }));
   const { logger, entries } = createMemoryLogger();
   const deps: ManualSendDeps = {
@@ -261,6 +268,20 @@ describe("executeManualSend", () => {
     // Um envio seguinte é bloqueado localmente, sem chamar o provider.
     const next = await executeManualSend(request(), deps);
     expect(next).toMatchObject({ kind: "rejected", reason: "OPTED_OUT" });
+  });
+
+  it("blocks numbers in the suppression list even without a contact", async () => {
+    const { deps, provider, messages } = setup({ suppressed: ["+351912345678"] });
+    const outcome = await executeManualSend(request(), deps);
+    expect(outcome).toMatchObject({ kind: "rejected", reason: "OPTED_OUT" });
+    expect(messages).toHaveLength(0);
+    expect((provider as RecordingProvider).calls).toHaveLength(0);
+  });
+
+  it("suppresses unknown numbers when the provider reports opt-out", async () => {
+    const { deps, suppressed } = setup({ scenario: "opt_out" });
+    await executeManualSend(request(), deps);
+    expect(suppressed.has("+351912345678")).toBe(true);
   });
 
   it("never logs or audits the full phone number or message body", async () => {

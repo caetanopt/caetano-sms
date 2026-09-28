@@ -1,62 +1,130 @@
 "use server";
 
-import { redirect } from "next/navigation";
 import { z } from "zod";
-import { ConsentStatus } from "@/generated/prisma/client";
 import { requireUser } from "@/lib/auth/session";
-import { prisma } from "@/lib/db/prisma";
-import { normalizePhoneNumber } from "@/lib/phone/normalize";
+import { redirectWith } from "@/lib/http/redirect-with";
+import {
+  changeContactConsent,
+  createContact,
+  deleteContact,
+  updateContactDetails,
+} from "@/server/services/contacts";
 
-const schema = z.object({
-  name: z.string().trim().min(1).max(120),
-  phone: z.string().min(6).max(40),
-  consentStatus: z.enum(["UNKNOWN", "OPTED_IN", "OPTED_OUT"]),
-  consentSource: z.string().trim().max(120).optional(),
+const optionalText = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    .optional()
+    .transform((value) => value || undefined);
+
+const detailsSchema = z.object({
+  name: z.string().trim().min(1, "Indica o nome.").max(120),
+  email: z
+    .union([z.literal(""), z.email("Email inválido.")])
+    .optional()
+    .transform((value) => value?.toLowerCase() || undefined),
+  notes: optionalText(1000),
 });
+
+const consentDetailsSchema = z.object({
+  consentSource: optionalText(120),
+  consentPurpose: optionalText(120),
+  consentTextVersion: optionalText(200),
+});
+
+const createSchema = detailsSchema.extend(consentDetailsSchema.shape).extend({
+  phone: z.string().trim().min(6, "Número de telefone inválido.").max(40),
+  consentStatus: z.enum(["UNKNOWN", "OPTED_IN", "OPTED_OUT"]),
+});
+
+function text(formData: FormData, key: string) {
+  const value = formData.get(key);
+  return typeof value === "string" ? value : undefined;
+}
+
+function firstIssue(error: z.ZodError) {
+  return error.issues[0]?.message ?? "Dados inválidos.";
+}
 
 export async function createContactAction(formData: FormData) {
   const user = await requireUser();
-  if (user.role === "VIEWER") redirect("/contacts?error=Sem%20permiss%C3%A3o");
-
-  const parsed = schema.safeParse({
-    name: formData.get("name"),
-    phone: formData.get("phone"),
-    consentStatus: formData.get("consentStatus"),
-    consentSource: String(formData.get("consentSource") ?? "") || undefined,
+  const parsed = createSchema.safeParse({
+    name: text(formData, "name"),
+    phone: text(formData, "phone"),
+    email: text(formData, "email"),
+    notes: text(formData, "notes"),
+    consentStatus: text(formData, "consentStatus"),
+    consentSource: text(formData, "consentSource"),
+    consentPurpose: text(formData, "consentPurpose"),
+    consentTextVersion: text(formData, "consentTextVersion"),
   });
-  if (!parsed.success) redirect("/contacts?error=Dados%20inv%C3%A1lidos");
+  if (!parsed.success) redirectWith("/contacts", { error: firstIssue(parsed.error) });
 
-  let phoneE164: string;
-  try {
-    phoneE164 = normalizePhoneNumber(parsed.data.phone);
-  } catch {
-    redirect("/contacts?error=N%C3%BAmero%20inv%C3%A1lido");
+  const result = await createContact(user, {
+    name: parsed.data.name,
+    phone: parsed.data.phone,
+    email: parsed.data.email,
+    notes: parsed.data.notes,
+    consentStatus: parsed.data.consentStatus,
+    consent: {
+      source: parsed.data.consentSource,
+      purpose: parsed.data.consentPurpose,
+      textVersion: parsed.data.consentTextVersion,
+    },
+  });
+  if (!result.ok) redirectWith("/contacts", { error: result.message });
+  redirectWith(`/contacts/${result.value.id}`, {
+    success: result.warning ? `Contacto criado. ${result.warning}` : "Contacto criado.",
+  });
+}
+
+export async function updateContactAction(contactId: string, formData: FormData) {
+  const user = await requireUser();
+  const path = `/contacts/${encodeURIComponent(contactId)}`;
+  const parsed = detailsSchema.safeParse({
+    name: text(formData, "name"),
+    email: text(formData, "email"),
+    notes: text(formData, "notes"),
+  });
+  if (!parsed.success) redirectWith(path, { error: firstIssue(parsed.error) });
+
+  const result = await updateContactDetails(user, contactId, parsed.data);
+  if (!result.ok) redirectWith(path, { error: result.message });
+  redirectWith(path, { success: "Contacto atualizado." });
+}
+
+export async function changeConsentAction(contactId: string, formData: FormData) {
+  const user = await requireUser();
+  const path = `/contacts/${encodeURIComponent(contactId)}`;
+  const to = text(formData, "to");
+  if (to !== "OPTED_IN" && to !== "OPTED_OUT") redirectWith(path, { error: "Pedido inválido." });
+
+  const parsed = consentDetailsSchema.safeParse({
+    consentSource: text(formData, "consentSource"),
+    consentPurpose: text(formData, "consentPurpose"),
+    consentTextVersion: text(formData, "consentTextVersion"),
+  });
+  if (!parsed.success) redirectWith(path, { error: firstIssue(parsed.error) });
+
+  const result = await changeContactConsent(user, contactId, to, {
+    source: parsed.data.consentSource,
+    purpose: parsed.data.consentPurpose,
+    textVersion: parsed.data.consentTextVersion,
+  });
+  if (!result.ok) redirectWith(path, { error: result.message });
+  redirectWith(path, {
+    success: result.warning ?? (to === "OPTED_OUT" ? "Opt-out registado." : "Opt-in registado."),
+  });
+}
+
+export async function deleteContactAction(contactId: string, formData: FormData) {
+  const user = await requireUser();
+  const path = `/contacts/${encodeURIComponent(contactId)}`;
+  if (text(formData, "confirm") !== "on") {
+    redirectWith(path, { error: "Confirma a eliminação assinalando a caixa." });
   }
-
-  const status = ConsentStatus[parsed.data.consentStatus];
-  try {
-    const contact = await prisma.contact.create({
-      data: {
-        name: parsed.data.name,
-        phoneE164,
-        consentStatus: status,
-        consentSource: parsed.data.consentSource,
-        consentAt: status === ConsentStatus.OPTED_IN ? new Date() : null,
-        optedOutAt: status === ConsentStatus.OPTED_OUT ? new Date() : null,
-      },
-    });
-    await prisma.auditLog.create({
-      data: {
-        userId: user.id,
-        action: "CONTACT_CREATED",
-        entityType: "Contact",
-        entityId: contact.id,
-        metadataJson: { consentStatus: status },
-      },
-    });
-  } catch {
-    redirect("/contacts?error=N%C3%A3o%20foi%20poss%C3%ADvel%20criar%20o%20contacto%20(poss%C3%ADvel%20duplicado)");
-  }
-
-  redirect("/contacts?success=Contacto%20criado");
+  const result = await deleteContact(user, contactId);
+  if (!result.ok) redirectWith(path, { error: result.message });
+  redirectWith("/contacts", { success: "Contacto eliminado. O histórico de mensagens e a suppression list mantêm-se." });
 }
