@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: smsapp
+      POSTGRES_PASSWORD: smsapp
+      POSTGRES_DB: sms_app
+    ports:
+      - "5432:5432"
+    volumes:
+      - sms_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smsapp -d sms_app"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  sms_postgres_data:
