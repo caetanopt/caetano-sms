@@ -1,10 +1,12 @@
 import { sendSmsAction } from "@/app/actions/send-sms";
+import { requireUser } from "@/lib/auth/session";
 
 export default async function SendPage({
   searchParams,
 }: {
   searchParams: Promise<{ success?: string; error?: string }>;
 }) {
+  await requireUser();
   const params = await searchParams;
   const dryRun = process.env.SMS_PROVIDER !== "aws" || process.env.AWS_SMS_DRY_RUN !== "false";
   const requestId = crypto.randomUUID();

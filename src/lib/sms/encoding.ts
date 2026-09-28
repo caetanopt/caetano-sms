@@ -40,13 +40,14 @@ export function getSmsSegmentInfo(message: string): SmsSegmentInfo {
     };
   }
 
-  const units = Array.from(message).length;
+  // UCS-2 conta unidades de 16 bits: caracteres fora do BMP (ex.: emoji) ocupam 2.
+  const units = message.length;
   const segmentSize = units <= 70 ? 70 : 67;
   const segments = Math.max(1, Math.ceil(units / segmentSize));
   const remainingInSegment = Math.max(0, segments * segmentSize - units);
   return {
     encoding: "UCS_2",
-    characters: units,
+    characters: Array.from(message).length,
     units,
     segments,
     remainingInSegment,

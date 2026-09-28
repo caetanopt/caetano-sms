@@ -1,7 +1,9 @@
+import { requireUser } from "@/lib/auth/session";
 import { ConsentStatus, SmsMessageStatus } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db/prisma";
 
 export default async function DashboardPage() {
+  await requireUser();
   const [messages, delivered, failed, contacts, optedOut] = await Promise.all([
     prisma.smsMessage.count(),
     prisma.smsMessage.count({ where: { status: SmsMessageStatus.DELIVERED } }),

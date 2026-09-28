@@ -1,4 +1,5 @@
 import { createContactAction } from "@/app/actions/contacts";
+import { requireUser } from "@/lib/auth/session";
 import { maskPhoneNumber } from "@/lib/phone/normalize";
 import { prisma } from "@/lib/db/prisma";
 
@@ -7,6 +8,7 @@ export default async function ContactsPage({
 }: {
   searchParams: Promise<{ success?: string; error?: string }>;
 }) {
+  await requireUser();
   const [params, contacts] = await Promise.all([
     searchParams,
     prisma.contact.findMany({ orderBy: { createdAt: "desc" }, take: 50 }),

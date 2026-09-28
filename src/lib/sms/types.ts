@@ -1,7 +1,9 @@
+export type SmsMessageType = "TRANSACTIONAL" | "PROMOTIONAL";
+
 export type SendSmsInput = {
   destinationPhoneNumber: string;
   messageBody: string;
-  messageType: "TRANSACTIONAL" | "PROMOTIONAL";
+  messageType: SmsMessageType;
   dryRun?: boolean;
   context?: Record<string, string>;
 };

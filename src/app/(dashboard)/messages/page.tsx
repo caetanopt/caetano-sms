@@ -1,7 +1,9 @@
+import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { maskPhoneNumber } from "@/lib/phone/normalize";
 
 export default async function MessagesPage() {
+  await requireUser();
   const messages = await prisma.smsMessage.findMany({
     orderBy: { createdAt: "desc" },
     take: 100,

@@ -35,11 +35,18 @@ cp .env.example .env
 # altera AUTH_SECRET, ADMIN_EMAIL e ADMIN_PASSWORD
 
 docker compose up -d
-pnpm install
-pnpm db:migrate --name init
+pnpm install          # também executa `prisma generate`
+pnpm db:migrate       # aplica as migrações em prisma/migrations
 pnpm db:seed
 pnpm dev
 ```
+
+Notas:
+
+- O `pnpm-workspace.yaml` autoriza explicitamente (`allowBuilds`) os build scripts de
+  `prisma`, `@prisma/engines`, `esbuild` e `unrs-resolver`. Sem isso o pnpm 11 recusa a instalação.
+- Em produção aplicar migrações com `pnpm prisma migrate deploy` (nunca `migrate dev`).
+- `pnpm build` não precisa de `DATABASE_URL`; a ligação à base de dados só é criada em runtime.
 
 Abrir `http://localhost:3000` e iniciar sessão com `ADMIN_EMAIL` e `ADMIN_PASSWORD`.
 

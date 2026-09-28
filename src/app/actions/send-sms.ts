@@ -2,16 +2,14 @@
 
 import { redirect } from "next/navigation";
 import { z } from "zod";
-import {
-  ConsentStatus,
-  MessageType,
-  SmsMessageStatus,
-} from "@/generated/prisma/client";
+import { MessageType, SmsMessageStatus } from "@/generated/prisma/client";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { maskPhoneNumber, normalizePhoneNumber } from "@/lib/phone/normalize";
 import { assertSmsLength } from "@/lib/sms/encoding";
+import { checkManualSendEligibility } from "@/lib/sms/eligibility";
 import { getSmsProvider } from "@/lib/sms/provider";
+import type { SmsProvider } from "@/lib/sms/types";
 
 const schema = z.object({
   requestId: z.string().uuid(),
@@ -53,25 +51,27 @@ export async function sendSmsAction(formData: FormData) {
   }
 
   const contact = await prisma.contact.findUnique({ where: { phoneE164 } });
-  if (contact?.optedOutAt || contact?.consentStatus === ConsentStatus.OPTED_OUT) {
-    fail("Este contacto está em opt-out.");
-  }
-
-  if (parsed.data.messageType === "PROMOTIONAL") {
-    if (contact) {
-      if (contact.consentStatus !== ConsentStatus.OPTED_IN) {
-        fail("Envio promocional bloqueado: o contacto não tem opt-in registado.");
-      }
-    } else if (!parsed.data.legalBasis) {
-      fail("Confirma a base legal/consentimento antes de enviar uma mensagem promocional.");
-    }
-  }
+  const eligibility = checkManualSendEligibility({
+    contact,
+    messageType: parsed.data.messageType,
+    legalBasisConfirmed: parsed.data.legalBasis,
+  });
+  if (!eligibility.ok) fail(eligibility.message);
 
   const existing = await prisma.smsMessage.findUnique({
     where: { idempotencyKey: parsed.data.requestId },
   });
   if (existing) {
     redirect(`/send?success=${encodeURIComponent("Este pedido já foi processado; não foi enviado novamente.")}`);
+  }
+
+  // Resolver o provider antes de criar o registo: um erro de configuração não deve
+  // deixar uma mensagem PENDING órfã.
+  let provider: SmsProvider;
+  try {
+    provider = getSmsProvider();
+  } catch {
+    fail("O serviço de envio não está configurado corretamente.");
   }
 
   const providerName = process.env.SMS_PROVIDER ?? "fake";
@@ -104,7 +104,6 @@ export async function sendSmsAction(formData: FormData) {
     fail("Não foi possível registar o pedido de envio.");
   }
 
-  const provider = getSmsProvider();
   const result = await provider.send({
     destinationPhoneNumber: phoneE164,
     messageBody: parsed.data.message,
