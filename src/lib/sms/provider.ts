@@ -1,10 +1,11 @@
-import { AwsSmsProvider } from "./aws-provider";
-import { FakeSmsProvider } from "./fake-provider";
+import { AwsSmsProvider, awsSmsProviderOptionsFromEnv } from "./aws-provider";
+import { parseProviderName } from "./config";
+import { FakeSmsProvider, fakeSmsProviderOptionsFromEnv } from "./fake-provider";
 import type { SmsProvider } from "./types";
 
-export function getSmsProvider(): SmsProvider {
-  const provider = process.env.SMS_PROVIDER ?? "fake";
-  if (provider === "fake") return new FakeSmsProvider();
-  if (provider === "aws") return new AwsSmsProvider();
-  throw new Error(`SMS_PROVIDER inválido: ${provider}`);
+/** Lança SmsConfigurationError se a configuração do provider for inválida. */
+export function getSmsProvider(env: Record<string, string | undefined> = process.env): SmsProvider {
+  const provider = parseProviderName(env);
+  if (provider === "aws") return new AwsSmsProvider(awsSmsProviderOptionsFromEnv(env));
+  return new FakeSmsProvider(fakeSmsProviderOptionsFromEnv(env));
 }

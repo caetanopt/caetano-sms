@@ -1,6 +1,7 @@
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { maskPhoneNumber } from "@/lib/phone/normalize";
+import { smsStatusLabel } from "@/lib/sms/status-labels";
 
 export default async function MessagesPage() {
   await requireUser();
@@ -34,7 +35,13 @@ export default async function MessagesPage() {
                 <td className="px-4 py-3">{maskPhoneNumber(message.destinationPhoneE164)}</td>
                 <td className="px-4 py-3">{message.messageType}</td>
                 <td className="px-4 py-3">{message.segmentCountEstimate ?? "-"}</td>
-                <td className="px-4 py-3 font-medium">{message.status}</td>
+                <td className="px-4 py-3">
+                  <span className="font-medium">{smsStatusLabel(message.status)}</span>
+                  {message.dryRun ? (
+                    <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-900">TESTE</span>
+                  ) : null}
+                  {message.errorCode ? <div className="text-xs text-red-700">{message.errorCode}</div> : null}
+                </td>
                 <td className="px-4 py-3">{message.provider}</td>
                 <td className="px-4 py-3">{message.createdBy.name}</td>
               </tr>

@@ -78,8 +78,11 @@ model SmsMessage {
   segmentCountEstimate  Int?
   status                SmsMessageStatus @default(PENDING)
   provider              String
+  dryRun                Boolean          @default(false)
   errorCode             String?
   errorMessage          String?
+  providerErrorName     String?
+  providerRequestId     String?
   sentAt                DateTime?
   deliveredAt           DateTime?
   failedAt              DateTime?

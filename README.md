@@ -75,6 +75,45 @@ AWS_SMS_DRY_RUN=true
 ```
 
 O fluxo completo é executado e persistido na base de dados, mas não é feita chamada real à AWS.
+As mensagens enviadas em modo de teste ficam marcadas (`dryRun`) e aparecem com a etiqueta **TESTE** no histórico.
+
+Para desenvolver o tratamento de erros sem AWS, o provider fake aceita cenários:
+
+```bash
+SMS_FAKE_SCENARIO=success   # success | failure | throttle | opt_out | uncertain
+SMS_FAKE_DELAY_MS=0         # latência simulada (0-30000 ms)
+```
+
+## Fluxo de envio individual
+
+1. O operador preenche destinatário, tipo (obrigatório escolher) e mensagem; o contador mostra
+   caracteres, encoding e partes estimadas em tempo real.
+2. **Rever envio**: o servidor normaliza o número (E.164), procura o contacto, aplica opt-out e
+   consentimento e mostra o resumo (número normalizado, contacto, partes, origem mascarada, modo).
+3. **Confirmar e enviar**: o servidor repete todas as validações, cria o `SmsMessage` como `PENDING`
+   com chave de idempotência e só depois chama o provider.
+
+Orquestração em `src/server/services/manual-send.ts`; persistência em
+`src/server/repositories/prisma-manual-send-store.ts`.
+
+## Erros do provider e estados
+
+Os erros da AWS são traduzidos em `src/lib/sms/aws-errors.ts` para códigos internos
+(`THROTTLED`, `OPTED_OUT`, `SPEND_LIMIT`, `PROTECT_BLOCKED`, `DESTINATION_NOT_VERIFIED`,
+`AUTH_ERROR`, `CONFIGURATION_ERROR`, …) com `retryable` e `uncertain` explícitos.
+São guardados o código, uma mensagem segura, o nome do erro AWS e o request id.
+
+| Resultado | Estado `SmsMessage` | Significado |
+|---|---|---|
+| Aceite | `ACCEPTED` | Aceite pelo fornecedor — **não** significa entregue |
+| Falha definitiva | `FAILED` | O fornecedor rejeitou; não foi enviado |
+| Resultado incerto | `UNKNOWN` | Timeout/5xx/erro inesperado: pode ter sido enviado. **Nunca reenviar sem verificar.** |
+
+Quando a AWS indica que o destino está em opt-out, o contacto local é marcado como `OPTED_OUT`
+(suppression list local) e o evento é auditado.
+
+Os logs são JSON estruturado (`sms.send.accepted`, `sms.send.failed`, `sms.send.uncertain`, …)
+com telefone mascarado e sem o texto da mensagem.
 
 ## Ativar AWS
 
@@ -105,11 +144,16 @@ AWS_SMS_DRY_RUN=false
 src/
   app/                  páginas e server actions
   components/           componentes partilhados
+  features/             tipos/estado partilhados por funcionalidade
   lib/
     auth/                sessões e autorização
     db/                  Prisma
+    logging/             logging estruturado
     phone/               E.164 e masking
-    sms/                 providers e segmentação
+    sms/                 providers, config, erros AWS, elegibilidade e segmentação
+  server/
+    services/            casos de uso (ex.: envio individual)
+    repositories/        persistência Prisma
   generated/             Prisma Client (ignorado no git)
 prisma/
   schema.prisma
