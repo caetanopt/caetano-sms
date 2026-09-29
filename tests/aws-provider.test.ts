@@ -6,7 +6,9 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   AwsSmsProvider,
+  AWS_SMS_REQUEST_TIMEOUT_MS,
   awsSmsProviderOptionsFromEnv,
+  createSmsVoiceClient,
   type AwsSmsProviderOptions,
   type SmsVoiceClient,
 } from "../src/lib/sms/aws-provider";
@@ -117,5 +119,16 @@ describe("awsSmsProviderOptionsFromEnv", () => {
     ["false", false],
   ])("AWS_SMS_DRY_RUN=%s => dry-run %s", (value, expected) => {
     expect(awsSmsProviderOptionsFromEnv({ ...env, AWS_SMS_DRY_RUN: value }).defaultDryRun).toBe(expected);
+  });
+});
+
+describe("createSmsVoiceClient", () => {
+  it("disables SDK retries (SendTextMessage is not idempotent) and sets finite timeouts", async () => {
+    const client = createSmsVoiceClient("eu-west-1");
+    expect(await client.config.maxAttempts()).toBe(1);
+    const handlerConfig = await (client.config.requestHandler as unknown as { configProvider: Promise<Record<string, unknown>> })
+      .configProvider;
+    expect(handlerConfig).toMatchObject({ requestTimeout: AWS_SMS_REQUEST_TIMEOUT_MS, throwOnRequestTimeout: true });
+    expect(handlerConfig.connectionTimeout).toBeGreaterThan(0);
   });
 });

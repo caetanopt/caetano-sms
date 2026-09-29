@@ -210,6 +210,13 @@ export async function deleteContact(actor: Actor, contactId: string): Promise<Se
   if (!contact) return { ok: false, message: "Contacto não encontrado." };
 
   await prisma.$transaction([
+    // Campanhas: envios pendentes deste contacto são cancelados e o texto congelado
+    // (que contém o nome) é apagado antes de a ligação ficar a null.
+    prisma.campaignRecipient.updateMany({
+      where: { contactId, status: "PENDING" },
+      data: { status: "SKIPPED", skipReason: "CONTACT_DELETED", claimToken: null },
+    }),
+    prisma.campaignRecipient.updateMany({ where: { contactId }, data: { renderedBody: null, phoneHash: null } }),
     prisma.contact.delete({ where: { id: contactId } }),
     prisma.auditLog.create({
       data: {

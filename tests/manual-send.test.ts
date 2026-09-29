@@ -58,7 +58,7 @@ function createMemoryStore(
     },
     async completeMessage(id, update, audit) {
       Object.assign(messages.find((message) => message.id === id)!, update satisfies MessageOutcomeUpdate);
-      audits.push(audit);
+      if (audit) audits.push(audit);
     },
     async recordProviderOptOut(phone, contactId, audit) {
       suppressed.add(phone);
@@ -396,6 +396,17 @@ describe("executeManualSend", () => {
       const prepared = await prepareManualSend(request({ templateId: "t3", variables: { place: "Loja de Lisboa" } }), deps);
       expect(prepared).toMatchObject({ ok: true, preview: { segments: { segments: 2 } } });
     });
+  });
+
+  it("respects the global rate limit before creating the message", async () => {
+    const { deps, messages, provider } = setup();
+    const outcome = await executeManualSend(request(), {
+      ...deps,
+      checkRate: async () => ({ ok: false, retryAfterMs: 12_000 }),
+    });
+    expect(outcome).toMatchObject({ kind: "rate_limited", message: expect.stringMatching(/12 s/) });
+    expect(messages).toHaveLength(0);
+    expect((provider as RecordingProvider).calls).toHaveLength(0);
   });
 
   it("never logs or audits the full phone number or message body", async () => {

@@ -7,11 +7,13 @@ import {
   type SendFormValues,
 } from "@/features/messages/send-form-state";
 import { requireUser } from "@/lib/auth/session";
+import { getCampaignLimits } from "@/features/campaigns/limits";
 import { consoleLogger } from "@/lib/logging/logger";
 import { MANUAL_VARIABLES, type TemplateValues } from "@/lib/sms/templates";
 import { getSmsRuntimeConfig } from "@/lib/sms/config";
 import { getSmsProvider } from "@/lib/sms/provider";
 import { prismaManualSendStore } from "@/server/repositories/prisma-manual-send-store";
+import { checkSendRate } from "@/server/services/send-rate";
 import {
   executeManualSend,
   prepareManualSend,
@@ -53,11 +55,13 @@ function readVariables(formData: FormData): TemplateValues {
 
 function buildDeps(): ManualSendDeps | null {
   try {
+    const maxSendsPerMinute = getCampaignLimits().maxSendsPerMinute;
     return {
       store: prismaManualSendStore,
       config: getSmsRuntimeConfig(),
       getProvider: () => getSmsProvider(),
       logger: consoleLogger,
+      checkRate: () => checkSendRate(maxSendsPerMinute),
     };
   } catch {
     return null;
@@ -141,6 +145,7 @@ export async function sendSmsFormAction(
     case "rejected":
       return editState(outcome.message);
     case "configuration_error":
+    case "rate_limited":
       return editState(outcome.message);
     case "duplicate":
       return done("duplicate", "Este pedido já foi processado; não foi enviado novamente.");

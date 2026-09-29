@@ -39,13 +39,35 @@ export function awsSmsProviderOptionsFromEnv(
   };
 }
 
+/** Limites de tempo de um pedido à AWS (ver README: dimensionam o lease das campanhas). */
+export const AWS_SMS_CONNECTION_TIMEOUT_MS = 3_000;
+export const AWS_SMS_REQUEST_TIMEOUT_MS = 10_000;
+
+/**
+ * Cliente sem retries automáticos do SDK: SendTextMessage não é idempotente na AWS
+ * (não há ClientToken), e o SDK repetiria por defeito até 3 vezes em 5xx/timeouts —
+ * casos em que a mensagem pode já ter sido aceite. A aplicação decide os retries
+ * (só para falhas garantidamente não enviadas, ex.: throttling).
+ */
+export function createSmsVoiceClient(region: string) {
+  return new PinpointSMSVoiceV2Client({
+    region,
+    maxAttempts: 1,
+    requestHandler: {
+      connectionTimeout: AWS_SMS_CONNECTION_TIMEOUT_MS,
+      requestTimeout: AWS_SMS_REQUEST_TIMEOUT_MS,
+      throwOnRequestTimeout: true,
+    },
+  });
+}
+
 export class AwsSmsProvider implements SmsProvider {
   private readonly client: SmsVoiceClient;
   private readonly options: AwsSmsProviderOptions;
 
   constructor(options: AwsSmsProviderOptions = awsSmsProviderOptionsFromEnv()) {
     this.options = options;
-    this.client = options.client ?? new PinpointSMSVoiceV2Client({ region: options.region });
+    this.client = options.client ?? createSmsVoiceClient(options.region);
   }
 
   async send(input: SendSmsInput): Promise<SmsSendResult> {

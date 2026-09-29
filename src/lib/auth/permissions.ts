@@ -9,6 +9,9 @@ export type Permission =
   | "lists:write"
   | "lists:delete"
   | "templates:write"
+  | "campaigns:write"
+  /** Confirmar, processar e cancelar campanhas. */
+  | "campaigns:send"
   | "sms:send";
 
 const MATRIX: Record<Permission, readonly Role[]> = {
@@ -19,6 +22,8 @@ const MATRIX: Record<Permission, readonly Role[]> = {
   "lists:write": ["ADMIN", "OPERATOR"],
   "lists:delete": ["ADMIN"],
   "templates:write": ["ADMIN", "OPERATOR"],
+  "campaigns:write": ["ADMIN", "OPERATOR"],
+  "campaigns:send": ["ADMIN", "OPERATOR"],
   "sms:send": ["ADMIN", "OPERATOR"],
 };
 

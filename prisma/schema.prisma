@@ -37,36 +37,64 @@ enum SmsMessageStatus {
   CANCELLED
 }
 
+enum CampaignStatus {
+  DRAFT
+  READY
+  SENDING
+  COMPLETED
+  PARTIAL
+  CANCELLED
+  FAILED
+}
+
+enum CampaignMode {
+  TEST
+  PRODUCTION
+}
+
+enum CampaignRecipientStatus {
+  PENDING
+  PROCESSING
+  ACCEPTED
+  FAILED
+  UNKNOWN
+  SKIPPED
+  CANCELLED
+}
+
 model User {
-  id            String         @id @default(cuid())
-  name          String
-  email         String         @unique
-  passwordHash  String
-  role          UserRole       @default(OPERATOR)
-  isActive      Boolean        @default(true)
-  messages      SmsMessage[]
-  auditLogs     AuditLog[]
-  consentEvents ConsentEvent[]
-  templates     SmsTemplate[]
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  id                 String         @id @default(cuid())
+  name               String
+  email              String         @unique
+  passwordHash       String
+  role               UserRole       @default(OPERATOR)
+  isActive           Boolean        @default(true)
+  messages           SmsMessage[]
+  auditLogs          AuditLog[]
+  consentEvents      ConsentEvent[]
+  templates          SmsTemplate[]
+  campaignsCreated   Campaign[]     @relation("CampaignCreatedBy")
+  campaignsConfirmed Campaign[]     @relation("CampaignConfirmedBy")
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
 }
 
 model Contact {
-  id            String              @id @default(cuid())
-  name          String
-  phoneE164     String              @unique
-  email         String?
-  consentStatus ConsentStatus       @default(UNKNOWN)
-  consentAt     DateTime?
-  consentSource String?
-  optedOutAt    DateTime?
-  notes         String?
-  messages      SmsMessage[]
-  lists         ContactListMember[]
-  consentEvents ConsentEvent[]
-  createdAt     DateTime            @default(now())
-  updatedAt     DateTime            @updatedAt
+  id                 String              @id @default(cuid())
+  name               String
+  phoneE164          String              @unique
+  email              String?
+  consentStatus      ConsentStatus       @default(UNKNOWN)
+  consentAt          DateTime?
+  consentSource      String?
+  optedOutAt         DateTime?
+  notes              String?
+  messages           SmsMessage[]
+  lists              ContactListMember[]
+  consentEvents      ConsentEvent[]
+  campaignRecipients CampaignRecipient[]
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
 
   @@index([consentStatus])
   @@index([name])
@@ -108,6 +136,7 @@ model ContactList {
   name        String              @unique
   description String?
   members     ContactListMember[]
+  campaigns   Campaign[]
   createdAt   DateTime            @default(now())
   updatedAt   DateTime            @updatedAt
 }
@@ -147,6 +176,8 @@ model SmsMessage {
   /// Template usado (o corpo final renderizado fica em `body`).
   templateId           String?
   template             SmsTemplate?     @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  campaignId           String?
+  campaign             Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   createdById          String
   createdBy            User             @relation(fields: [createdById], references: [id])
   createdAt            DateTime         @default(now())
@@ -155,6 +186,7 @@ model SmsMessage {
   @@index([createdAt])
   @@index([status])
   @@index([destinationPhoneE164])
+  @@index([campaignId])
 }
 
 model AuditLog {
@@ -180,6 +212,88 @@ model SmsTemplate {
   createdById String
   createdBy   User         @relation(fields: [createdById], references: [id])
   messages    SmsMessage[]
+  campaigns   Campaign[]
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
+}
+
+/// Campanha de SMS para uma lista (CLAUDE.md §17, §29).
+model Campaign {
+  id                   String              @id @default(cuid())
+  name                 String
+  status               CampaignStatus      @default(DRAFT)
+  messageType          MessageType
+  templateId           String?
+  template             SmsTemplate?        @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  /// Texto livre ou corpo do template (snapshot congelado na confirmação).
+  messageBody          String
+  listId               String?
+  list                 ContactList?        @relation(fields: [listId], references: [id], onDelete: SetNull)
+  /// Valores das variáveis manuais (date, time, place).
+  variablesJson        Json                @default("{}")
+  /// Congelados na confirmação; o processamento para se a configuração atual for diferente.
+  mode                 CampaignMode?
+  provider             String?
+  /// sha256 da origination identity no momento da confirmação (nunca o valor em claro).
+  originationHash      String?
+  confirmedById        String?
+  confirmedBy          User?               @relation("CampaignConfirmedBy", fields: [confirmedById], references: [id])
+  confirmedAt          DateTime?
+  startedAt            DateTime?
+  finishedAt           DateTime?
+  cancelledAt          DateTime?
+  /// Pausa persistida (operador ou sistema). Enquanto definida, nenhum envio é feito.
+  pausedAt             DateTime?
+  pausedById           String?
+  /// Motivo seguro da última paragem automática (modo/origem alterados, erro de conta, …).
+  lastError            String?
+  /// Backoff ao nível da campanha (ex.: throttling da AWS).
+  nextStepAt           DateTime?
+  consecutiveUnknown   Int                 @default(0)
+  /// Lease de processamento com dono: um único passo de cada vez por campanha.
+  processingLeaseToken String?
+  processingLeaseUntil DateTime?
+  createdById          String
+  createdBy            User                @relation("CampaignCreatedBy", fields: [createdById], references: [id])
+  recipients           CampaignRecipient[]
+  messages             SmsMessage[]
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model CampaignRecipient {
+  id            String                  @id @default(cuid())
+  campaignId    String
+  campaign      Campaign                @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  /// SetNull: eliminar um contacto (RGPD) não apaga o registo da campanha.
+  contactId     String?
+  contact       Contact?                @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  status        CampaignRecipientStatus @default(PENDING)
+  /// OPTED_OUT | NO_CONSENT | INVALID_PHONE | CONTACT_DELETED
+  skipReason    String?
+  /// Texto final congelado na confirmação; apagado quando o destinatário termina (o SmsMessage guarda o enviado).
+  renderedBody  String?
+  segments      Int?
+  /// sha256 do número revisto na confirmação: um número alterado depois não recebe o envio.
+  phoneHash     String?
+  /// Número da tentativa atual; faz parte da chave de idempotência e só aumenta após falha garantidamente não enviada.
+  attempt       Int                     @default(1)
+  /// Retries com backoff já usados (throttling / fornecedor indisponível sem envio).
+  retries       Int                     @default(0)
+  nextAttemptAt DateTime?
+  claimToken    String?
+  claimedAt     DateTime?
+  /// Último SmsMessage deste destinatário.
+  messageId     String?
+  errorCode     String?
+  errorMessage  String?
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+
+  @@unique([campaignId, contactId])
+  @@index([campaignId, status, nextAttemptAt])
+  @@index([status, claimedAt])
 }

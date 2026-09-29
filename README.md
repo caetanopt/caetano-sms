@@ -11,6 +11,8 @@ Starter para uma aplicação web de envio de SMS através do **AWS End User Mess
 - contactos com histórico de consentimento, opt-out e suppression list local
 - listas de contactos e importação CSV com validação
 - templates com variáveis de whitelist e pré-visualização
+- campanhas com revisão §29, confirmação explícita e envio por lotes idempotente
+- testes E2E com Playwright
 - envio individual
 - `FakeSmsProvider` para desenvolvimento seguro
 - `AwsSmsProvider` com AWS SDK v3
@@ -109,6 +111,55 @@ Variáveis permitidas (whitelist):
   (70 caracteres por parte). O próprio texto "marcação" já obriga a Unicode;
 - eliminar um template mantém as mensagens enviadas (com o texto final).
 
+## Campanhas
+
+`/campaigns` → nova campanha (lista + template ou texto livre + tipo + valores das variáveis).
+
+1. **Rascunho**: guardar nunca envia. Só rascunhos podem ser editados ou eliminados.
+2. **Revisão (§29)**: calculada no servidor a partir da base de dados — elegíveis, excluídos por
+   opt-out, sem consentimento, números inválidos, partes estimadas, origem mascarada, modo, lista de
+   destinatários (número normalizado mascarado + mensagem final) e contactos com variáveis em falta
+   (bloqueiam a confirmação). Campanhas exigem **sempre** opt-in, qualquer que seja o tipo.
+   Promocionais mostram a finalidade dos opt-in e exigem confirmação de que abrangem marketing.
+3. **Confirmação**: "Confirmar e enviar"; acima de `SMS_BULK_CONFIRMATION_THRESHOLD` é pedida a
+   frase exata `ENVIAR N SMS` (validada no servidor). Um fingerprint garante que nada mudou desde a
+   revisão (lista, consentimentos, texto, modo, origem). Os destinatários e o texto final ficam congelados.
+4. **Envio**: por passos curtos, conduzidos pela página da campanha **depois de um clique explícito**
+   (ou logo após confirmar). Abrir a página nunca envia. Pausar/retomar/cancelar ficam guardados no
+   servidor e auditados.
+
+Garantias do motor (`src/server/services/campaigns/engine.ts`):
+
+- idempotência: chave `campaign:{campanha}:{destinatário}:{tentativa}` (UNIQUE); a tentativa só
+  aumenta depois de uma falha garantidamente não enviada — recuperações e passos concorrentes
+  colidem na mesma chave e nunca reenviam;
+- cada destinatário é reservado imediatamente antes do envio e todas as transições são CAS sobre o
+  seu `claimToken`; um lease com dono por campanha é renovado antes de cada envio;
+- consentimento, opt-out e suppression list são **re-verificados imediatamente antes de cada envio**;
+- resultados incertos (`UNKNOWN`) nunca são repetidos; 3 seguidos pausam a campanha;
+- erros de conta (autenticação, configuração, limite de gastos, quota) pausam a campanha sem gastar
+  destinatários; throttling faz backoff exponencial com jitter ao nível da campanha;
+- se o modo (TESTE/PRODUÇÃO), o fornecedor ou a origem mudarem depois da confirmação, o envio para;
+- rate limit global `SMS_MAX_SENDS_PER_MINUTE` (campanhas + envio individual), serializado com
+  `pg_advisory_xact_lock` — exceção documentada à regra de SQL só pelo ORM (`src/server/services/send-rate.ts`);
+- o SDK AWS é criado com `maxAttempts: 1` e timeouts finitos (3 s ligação / 10 s pedido):
+  `SendTextMessage` não é idempotente na AWS, pelo que só a aplicação decide retries.
+
+Fila: `SmsJobQueue` com `DirectSmsJobQueue` (MVP: o job corre dentro do passo). Uma implementação
+`SqsSmsJobQueue` + worker é o passo seguinte para produção; o domínio não depende do SQS.
+
+| Variável | Defeito | Significado |
+|---|---|---|
+| `SMS_MAX_RECIPIENTS_PER_CAMPAIGN` | 500 | máximo de elegíveis por campanha |
+| `SMS_MAX_SENDS_PER_MINUTE` | 60 | limite global de envios |
+| `SMS_CAMPAIGN_BATCH_SIZE` | 10 | mensagens por passo |
+| `SMS_BULK_CONFIRMATION_THRESHOLD` | 50 | acima disto pede "ENVIAR N SMS" |
+| `SMS_CAMPAIGN_MAX_ATTEMPTS` | 3 | tentativas por throttling antes de pausar |
+
+Privacidade: o texto final por destinatário é apagado quando o destinatário termina ou o contacto
+é eliminado (o texto enviado fica em `SmsMessage`). **Retenção por definir com o DPO** (proposta: anonimizar
+corpo e número de `SmsMessage` após 12 meses) — a implementar na Fase 7.
+
 ## Validação
 
 ```bash
@@ -122,6 +173,12 @@ Ou:
 
 ```bash
 pnpm validate
+```
+
+Testes E2E (Playwright, build de produção, provider fake, base de dados de **teste** apagada no início):
+
+```bash
+pnpm test:e2e
 ```
 
 Testes de integração (PostgreSQL real, base de dados **separada**):
@@ -235,13 +292,11 @@ CLAUDE.md
 
 O `CLAUDE.md` contém o plano completo. A evolução recomendada é:
 
-1. campanhas e idempotência (Fase 5);
-2. gestão de utilizadores pela UI;
-3. SQS para jobs;
-4. Configuration Set + SNS/SQS para delivery receipts;
-5. rate limiting e limites por identidade/país;
-6. E2E com Playwright;
-7. hardening e deployment.
+1. delivery events: Configuration Set + SNS/SQS (Fase 6);
+2. `SqsSmsJobQueue` + worker para campanhas sem depender da página aberta;
+3. gestão de utilizadores pela UI;
+4. rate limiting por identidade/país, headers de segurança, retenção;
+5. hardening e deployment.
 
 ## Segurança
 

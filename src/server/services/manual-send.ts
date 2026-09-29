@@ -1,5 +1,5 @@
 import type { Logger } from "@/lib/logging/logger";
-import { maskPhoneNumber, normalizePhoneNumber } from "@/lib/phone/normalize";
+import { normalizePhoneNumber } from "@/lib/phone/normalize";
 import type { SmsRuntimeConfig } from "@/lib/sms/config";
 import { assertSmsLength, type SmsSegmentInfo } from "@/lib/sms/encoding";
 import { checkManualSendEligibility, type EligibilityContact } from "@/lib/sms/eligibility";
@@ -10,7 +10,8 @@ import {
   renderTemplate,
   type TemplateValues,
 } from "@/lib/sms/templates";
-import type { SmsErrorCode, SmsMessageType, SmsProvider, SmsSendResult } from "@/lib/sms/types";
+import type { SmsErrorCode, SmsMessageType, SmsProvider } from "@/lib/sms/types";
+import { dispatchSms, type AuditEntry, type DispatchStore } from "./sms-dispatch";
 
 // ---------------------------------------------------------------------------
 // Portas (implementação Prisma em src/server/repositories)
@@ -20,49 +21,12 @@ export type StoredContact = EligibilityContact & { id: string; name: string };
 
 export type StoredTemplate = { id: string; name: string; body: string; messageType: SmsMessageType };
 
-export type AuditEntry = {
-  userId: string;
-  action: string;
-  entityType: string;
-  entityId?: string;
-  metadata: Record<string, string | number | boolean | null>;
-};
+export type { AuditEntry, MessageOutcomeUpdate, PendingMessageData } from "./sms-dispatch";
 
-export type PendingMessageData = {
-  idempotencyKey: string;
-  contactId: string | null;
-  destinationPhoneE164: string;
-  messageType: SmsMessageType;
-  body: string;
-  encodingEstimate: SmsSegmentInfo["encoding"];
-  segmentCountEstimate: number;
-  provider: string;
-  dryRun: boolean;
-  templateId: string | null;
-  createdById: string;
-};
-
-export type MessageOutcomeUpdate =
-  | { status: "ACCEPTED"; awsMessageId: string; provider: string; sentAt: Date }
-  | {
-      status: "FAILED" | "UNKNOWN";
-      errorCode: SmsErrorCode;
-      errorMessage: string;
-      providerErrorName?: string;
-      providerRequestId?: string;
-      failedAt: Date | null;
-    };
-
-export interface ManualSendStore {
+export interface ManualSendStore extends DispatchStore {
   findContactByPhone(phoneE164: string): Promise<StoredContact | null>;
   isSuppressed(phoneE164: string): Promise<boolean>;
   findTemplate(templateId: string): Promise<StoredTemplate | null>;
-  findMessageByIdempotencyKey(key: string): Promise<{ id: string; status: string } | null>;
-  /** Devolve null se já existir uma mensagem com a mesma chave de idempotência. */
-  createPendingMessage(data: PendingMessageData): Promise<{ id: string } | null>;
-  completeMessage(id: string, update: MessageOutcomeUpdate, audit: AuditEntry): Promise<void>;
-  /** Adiciona o número à suppression list e marca o contacto (se existir) em opt-out. */
-  recordProviderOptOut(phoneE164: string, contactId: string | null, audit: AuditEntry): Promise<void>;
   writeAudit(entry: AuditEntry): Promise<void>;
 }
 
@@ -73,6 +37,8 @@ export type ManualSendDeps = {
   getProvider: () => SmsProvider;
   logger: Logger;
   now?: () => Date;
+  /** Rate limit global (SMS_MAX_SENDS_PER_MINUTE). Omitido = sem limite (testes). */
+  checkRate?: () => Promise<{ ok: true } | { ok: false; retryAfterMs: number }>;
 };
 
 // ---------------------------------------------------------------------------
@@ -123,6 +89,7 @@ export type ManualSendOutcome =
   | { kind: "rejected"; reason: RejectionReason; message: string }
   | { kind: "duplicate"; messageId: string; status: string }
   | { kind: "configuration_error"; message: string }
+  | { kind: "rate_limited"; message: string }
   | { kind: "accepted"; messageId: string; providerMessageId: string; dryRun: boolean }
   | { kind: "failed"; messageId: string; errorCode: SmsErrorCode; message: string; retryable: boolean }
   | { kind: "uncertain"; messageId: string; errorCode: SmsErrorCode; message: string };
@@ -266,7 +233,6 @@ export async function executeManualSend(
   }
 
   const { preview, contactId, templateId } = prepared;
-  const maskedDestination = maskPhoneNumber(preview.phoneE164);
 
   let provider: SmsProvider;
   try {
@@ -282,150 +248,48 @@ export async function executeManualSend(
     };
   }
 
-  const created = await store.createPendingMessage({
-    idempotencyKey: input.requestId,
-    contactId,
-    destinationPhoneE164: preview.phoneE164,
-    messageType: preview.messageType,
-    body: preview.renderedMessage,
-    encodingEstimate: preview.segments.encoding,
-    segmentCountEstimate: preview.segments.segments,
-    provider: config.provider,
-    dryRun: config.mode === "TEST",
-    templateId,
-    createdById: input.userId,
-  });
-  if (!created) {
-    const raced = await store.findMessageByIdempotencyKey(input.requestId);
-    return { kind: "duplicate", messageId: raced?.id ?? "", status: raced?.status ?? "PENDING" };
+  if (deps.checkRate) {
+    const rate = await deps.checkRate();
+    if (!rate.ok) {
+      logger.log("warn", "sms.send.rate_limited", { userId: input.userId });
+      return {
+        kind: "rate_limited",
+        message: `Limite interno de envios por minuto atingido. Tenta novamente dentro de ${Math.ceil(rate.retryAfterMs / 1000)} s.`,
+      };
+    }
   }
 
-  const baseLog = {
-    messageInternalId: created.id,
-    userId: input.userId,
-    provider: config.provider,
-    dryRun: config.mode === "TEST",
-    maskedDestination,
-    segments: preview.segments.segments,
-  };
-
-  const startedAt = performance.now();
-  let result: SmsSendResult;
-  try {
-    result = await provider.send({
-      destinationPhoneNumber: preview.phoneE164,
-      messageBody: preview.renderedMessage,
-      messageType: preview.messageType,
-      dryRun: config.dryRun,
-      context: { internalMessageId: created.id, source: "manual" },
-    });
-  } catch (error) {
-    // Erro inesperado no adapter: não sabemos se o pedido chegou ao fornecedor.
-    result = {
-      ok: false,
-      errorCode: "UNKNOWN",
-      errorMessage: "Erro inesperado no envio. O resultado é incerto; não reenviar sem verificar.",
-      retryable: false,
-      uncertain: true,
-      providerErrorName: error instanceof Error ? error.name : "UnknownError",
-    };
-  }
-  const durationMs = Math.round(performance.now() - startedAt);
-
-  if (result.ok) {
-    await store.completeMessage(
-      created.id,
-      { status: "ACCEPTED", awsMessageId: result.messageId, provider: result.provider, sentAt: now() },
-      {
-        userId: input.userId,
-        action: "SMS_SEND_ACCEPTED",
-        entityType: "SmsMessage",
-        entityId: created.id,
-        metadata: {
-          destination: maskedDestination,
-          provider: result.provider,
-          messageType: preview.messageType,
-          segments: preview.segments.segments,
-          legalBasisConfirmed: input.legalBasisConfirmed,
-          dryRun: config.mode === "TEST",
-        },
-      },
-    );
-    logger.log("info", "sms.send.accepted", {
-      ...baseLog,
-      awsMessageId: result.messageId,
-      status: "ACCEPTED",
-      durationMs,
-    });
-    return {
-      kind: "accepted",
-      messageId: created.id,
-      providerMessageId: result.messageId,
-      dryRun: config.mode === "TEST",
-    };
-  }
-
-  const status = result.uncertain ? "UNKNOWN" : "FAILED";
-  await store.completeMessage(
-    created.id,
+  const outcome = await dispatchSms(
     {
-      status,
-      errorCode: result.errorCode,
-      errorMessage: result.errorMessage,
-      providerErrorName: result.providerErrorName,
-      providerRequestId: result.providerRequestId,
-      failedAt: result.uncertain ? null : now(),
-    },
-    {
-      userId: input.userId,
-      action: result.uncertain ? "SMS_SEND_UNCERTAIN" : "SMS_SEND_FAILED",
-      entityType: "SmsMessage",
-      entityId: created.id,
-      metadata: {
-        destination: maskedDestination,
-        errorCode: result.errorCode,
-        providerErrorName: result.providerErrorName ?? null,
-        retryable: result.retryable,
-        uncertain: result.uncertain,
+      message: {
+        idempotencyKey: input.requestId,
+        contactId,
+        destinationPhoneE164: preview.phoneE164,
+        messageType: preview.messageType,
+        body: preview.renderedMessage,
+        encodingEstimate: preview.segments.encoding,
+        segmentCountEstimate: preview.segments.segments,
+        templateId,
+        campaignId: null,
+        createdById: input.userId,
       },
+      source: "manual",
+      auditMetadata: { legalBasisConfirmed: input.legalBasisConfirmed },
     },
+    { store, config, provider, logger, now },
   );
 
-  if (result.errorCode === "OPTED_OUT") {
-    // Suppression list local: refletir o opt-out comunicado pelo fornecedor.
-    await store.recordProviderOptOut(preview.phoneE164, contactId, {
-      userId: input.userId,
-      action: "CONTACT_OPTED_OUT_BY_PROVIDER",
-      entityType: contactId ? "Contact" : "SuppressionEntry",
-      entityId: contactId ?? undefined,
-      metadata: { messageId: created.id, provider: config.provider, destination: maskedDestination },
-    });
+  switch (outcome.kind) {
+    case "duplicate":
+      return outcome;
+    case "accepted":
+      return { ...outcome, dryRun: config.mode === "TEST" };
+    case "failed":
+      return outcome;
+    case "uncertain":
+      return {
+        ...outcome,
+        message: `${outcome.message} A mensagem ficou em estado UNKNOWN; confirma no histórico antes de reenviar.`,
+      };
   }
-
-  logger.log(result.uncertain ? "error" : "warn", result.uncertain ? "sms.send.uncertain" : "sms.send.failed", {
-    ...baseLog,
-    status,
-    durationMs,
-    errorCode: result.errorCode,
-    providerErrorName: result.providerErrorName,
-    providerRequestId: result.providerRequestId,
-    retryable: result.retryable,
-    uncertain: result.uncertain,
-  });
-
-  if (result.uncertain) {
-    return {
-      kind: "uncertain",
-      messageId: created.id,
-      errorCode: result.errorCode,
-      message: `${result.errorMessage} A mensagem ficou em estado UNKNOWN; confirma no histórico antes de reenviar.`,
-    };
-  }
-  return {
-    kind: "failed",
-    messageId: created.id,
-    errorCode: result.errorCode,
-    message: result.errorMessage,
-    retryable: result.retryable,
-  };
 }

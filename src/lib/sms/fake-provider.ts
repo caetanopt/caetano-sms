@@ -7,6 +7,8 @@ export const FAKE_SCENARIOS = [
   "throttle",
   "opt_out",
   "uncertain",
+  "auth",
+  "spend_limit",
 ] as const;
 
 export type FakeScenario = (typeof FAKE_SCENARIOS)[number];
@@ -40,6 +42,22 @@ const FAILURES: Record<Exclude<FakeScenario, "success">, SmsSendFailure> = {
     retryable: false,
     uncertain: false,
     providerErrorName: "FakeConflictException",
+  },
+  auth: {
+    ok: false,
+    errorCode: "AUTH_ERROR",
+    errorMessage: "Falha de autenticação simulada pelo provider fake.",
+    retryable: false,
+    uncertain: false,
+    providerErrorName: "FakeAccessDeniedException",
+  },
+  spend_limit: {
+    ok: false,
+    errorCode: "SPEND_LIMIT",
+    errorMessage: "Limite de gastos simulado pelo provider fake.",
+    retryable: false,
+    uncertain: false,
+    providerErrorName: "FakeServiceQuotaExceededException",
   },
   uncertain: {
     ok: false,

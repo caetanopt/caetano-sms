@@ -16,6 +16,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "prisma generate && vitest run --config vitest.integration.config.ts",
+    "test:e2e": "pnpm build && playwright test",
     "validate": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "prisma:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
@@ -37,6 +38,7 @@
     "zod": "^4.1.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.56.1",
     "@tailwindcss/postcss": "^4.1.0",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.15.0",

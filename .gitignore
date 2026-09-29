@@ -24,3 +24,5 @@ test-results/
 # misc
 .DS_Store
 *.log
+/blob-report/
+/playwright/.cache/

@@ -55,6 +55,10 @@ export const prismaManualSendStore: ManualSendStore = {
   },
 
   async completeMessage(id, update, audit) {
+    if (!audit) {
+      await prisma.smsMessage.update({ where: { id }, data: update });
+      return;
+    }
     await prisma.$transaction([
       prisma.smsMessage.update({ where: { id }, data: update }),
       prisma.auditLog.create({ data: auditData(audit) }),

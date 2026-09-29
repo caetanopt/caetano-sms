@@ -17,6 +17,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
               <Link href="/contacts" className="hover:text-slate-950">Contactos</Link>
               <Link href="/lists" className="hover:text-slate-950">Listas</Link>
               <Link href="/templates" className="hover:text-slate-950">Templates</Link>
+              <Link href="/campaigns" className="hover:text-slate-950">Campanhas</Link>
               <Link href="/messages" className="hover:text-slate-950">Histórico</Link>
             </nav>
           </div>
