@@ -21,6 +21,8 @@ export type LogFields = {
   uncertain?: boolean;
   segments?: number;
   maskedDestination?: string;
+  /** Entregas da mesma mensagem SQS (ApproximateReceiveCount). */
+  receiveCount?: number;
 };
 
 export type LogLevel = "info" | "warn" | "error";

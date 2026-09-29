@@ -1,3 +1,4 @@
+import { DeleteMessageCommand, ReceiveMessageCommand, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/db/prisma";
 import { FakeSmsProvider, type FakeScenario } from "@/lib/sms/fake-provider";
@@ -14,6 +15,8 @@ import {
 } from "@/server/services/campaigns/engine";
 import { cancelCampaign, pauseCampaign, resumeCampaign, revertCampaignToDraft } from "@/server/services/campaigns/lifecycle";
 import { currentOrigin } from "@/server/services/campaigns/origin";
+import { pollSmsJobsOnce, type SqsConsumerClient } from "@/server/services/campaigns/sqs-consumer";
+import { SqsSmsJobQueue } from "@/server/services/campaigns/sqs-job-queue";
 import { buildCampaignPreview } from "@/server/services/campaigns/preview";
 import { changeContactConsent, createContact, deleteContact, type Actor } from "@/server/services/contacts";
 import { addContactToList, createList } from "@/server/services/lists";
@@ -718,5 +721,178 @@ describe("campaign worker", () => {
     const { deps } = engine(provider);
     await runWorkerOnce(deps);
     expect(provider.calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fila SQS (cliente em memória: nunca contacta a AWS)
+// ---------------------------------------------------------------------------
+
+class MemorySqs {
+  messages: { id: string; body: string; receiptHandle: string; receives: number }[] = [];
+  deleted: string[] = [];
+  failSend = false;
+  private seq = 0;
+
+  send(command: SendMessageCommand | ReceiveMessageCommand | DeleteMessageCommand): Promise<never>;
+  async send(command: SendMessageCommand | ReceiveMessageCommand | DeleteMessageCommand) {
+    if (command instanceof SendMessageCommand) {
+      if (this.failSend) throw Object.assign(new Error("unavailable"), { name: "QueueUnavailable" });
+      this.seq += 1;
+      this.messages.push({ id: `m${this.seq}`, body: command.input.MessageBody ?? "", receiptHandle: `rh${this.seq}`, receives: 0 });
+      return { $metadata: {} };
+    }
+    if (command instanceof ReceiveMessageCommand) {
+      const batch = this.messages.slice(0, command.input.MaxNumberOfMessages ?? 1);
+      for (const m of batch) m.receives += 1;
+      return {
+        $metadata: {},
+        Messages: batch.map((m) => ({ MessageId: m.id, Body: m.body, ReceiptHandle: m.receiptHandle, Attributes: { ApproximateReceiveCount: String(m.receives) } })),
+      };
+    }
+    this.deleted.push(command.input.ReceiptHandle ?? "");
+    this.messages = this.messages.filter((m) => m.receiptHandle !== command.input.ReceiptHandle);
+    return { $metadata: {} };
+  }
+}
+
+const SQS_CONFIG = {
+  kind: "sqs",
+  region: "eu-west-1",
+  queueUrl: "https://sqs.eu-west-1.amazonaws.com/123456789012/sms-jobs",
+  fifo: false,
+  maxInFlight: 2,
+  visibilityTimeoutSeconds: 60,
+} as const;
+
+describe("SQS job queue + worker", () => {
+  function sqsEngine(provider: RecordingProvider, sqs = new MemorySqs()) {
+    const { deps, advance } = engine(provider, { queue: new SqsSmsJobQueue(SQS_CONFIG, sqs) });
+    const poll = (engineDeps: EngineDeps = deps) =>
+      pollSmsJobsOnce({ client: sqs as unknown as SqsConsumerClient, config: SQS_CONFIG, engine: engineDeps, waitTimeSeconds: 0 });
+    return { deps, advance, sqs, poll };
+  }
+
+  it("publishes claimed recipients (bounded in-flight) and the worker sends and completes the campaign", async () => {
+    const { campaignId } = await setup({ optedIn: 3 });
+    await confirm(campaignId);
+    const provider = new RecordingProvider();
+    const { deps, sqs, poll } = sqsEngine(provider);
+
+    expect(await processCampaignStep(campaignId, deps)).toMatchObject({ state: "wait", reason: "A aguardar a fila de envio." });
+    expect(provider.calls).toHaveLength(0); // o passo só publica
+    expect(sqs.messages).toHaveLength(2);
+    expect(sqs.messages[0].body).not.toMatch(/\+351|Cliente|Olá/);
+    expect((await recipientCounts(campaignId)).PROCESSING).toBe(2);
+
+    expect(await poll()).toEqual({ received: 2, processed: 2, discarded: 0, failed: 0 });
+    expect(provider.calls).toHaveLength(2);
+    expect(sqs.messages).toHaveLength(0);
+
+    await processCampaignStep(campaignId, deps);
+    await poll();
+    expect(provider.calls).toHaveLength(3);
+    // O worker finaliza a campanha quando termina o último destinatário.
+    expect(await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } })).toMatchObject({ status: "COMPLETED" });
+    expect(await processCampaignStep(campaignId, deps)).toMatchObject({ state: "done", status: "COMPLETED" });
+  });
+
+  it("redelivered or late messages never send twice", async () => {
+    const { campaignId } = await setup({ optedIn: 1 });
+    await confirm(campaignId);
+    const provider = new RecordingProvider();
+    const { deps, sqs, poll } = sqsEngine(provider);
+    await processCampaignStep(campaignId, deps);
+    const copy = { ...sqs.messages[0] };
+    await poll();
+    // SQS pode entregar a mesma mensagem outra vez (at-least-once).
+    sqs.messages.push({ ...copy, receiptHandle: "rh-again" });
+    expect(await poll()).toMatchObject({ processed: 1 });
+    expect(provider.calls).toHaveLength(1);
+    expect(await prisma.smsMessage.count({ where: { campaignId } })).toBe(1);
+  });
+
+  it("a worker with a different mode/origin pauses the campaign instead of sending", async () => {
+    const { campaignId } = await setup({ optedIn: 1 });
+    await confirm(campaignId);
+    const provider = new RecordingProvider();
+    const { deps, poll } = sqsEngine(provider);
+    await processCampaignStep(campaignId, deps);
+
+    const production = currentOrigin({ SMS_PROVIDER: "aws", AWS_SMS_DRY_RUN: "false", AWS_SMS_ORIGINATION_IDENTITY: "Caetano" });
+    expect(await poll({ ...deps, origin: () => production })).toMatchObject({ processed: 1 });
+    expect(provider.calls).toHaveLength(0);
+    const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    expect(campaign.pausedAt).not.toBeNull();
+    expect(campaign.lastError).toMatch(/modo mudou/);
+    expect((await recipientCounts(campaignId)).PENDING).toBe(1);
+  });
+
+  it("jobs already queued wait during a throttling backoff instead of sending", async () => {
+    const { campaignId } = await setup({ optedIn: 2 });
+    await confirm(campaignId);
+    const provider = new RecordingProvider("throttle");
+    const { deps, poll } = sqsEngine(provider);
+    await processCampaignStep(campaignId, deps);
+    await poll();
+    // O primeiro job é limitado pela AWS; o segundo já não é enviado durante o backoff.
+    expect(provider.calls).toHaveLength(1);
+    expect((await recipientCounts(campaignId)).PENDING).toBe(2);
+    const second = await prisma.campaignRecipient.findFirstOrThrow({ where: { campaignId, retries: 0 } });
+    expect(second).toMatchObject({ attempt: 1, claimToken: null });
+  });
+
+  it("releases the claim when publishing fails", async () => {
+    const { campaignId } = await setup({ optedIn: 1 });
+    await confirm(campaignId);
+    const sqs = new MemorySqs();
+    sqs.failSend = true;
+    const { deps } = sqsEngine(new RecordingProvider(), sqs);
+    expect(await processCampaignStep(campaignId, deps)).toMatchObject({ state: "wait", reason: expect.stringMatching(/indisponível/) });
+    const [recipient] = await prisma.campaignRecipient.findMany({ where: { campaignId } });
+    expect(recipient).toMatchObject({ status: "PENDING", claimToken: null, attempt: 1 });
+  });
+
+  it("discards invalid messages and keeps failed ones for redelivery", async () => {
+    const { campaignId } = await setup({ optedIn: 1 });
+    await confirm(campaignId);
+    const provider = new RecordingProvider();
+    const { deps, sqs, poll } = sqsEngine(provider);
+    await processCampaignStep(campaignId, deps);
+    sqs.messages.push({ id: "bad", body: "{\"v\":1}", receiptHandle: "rh-bad", receives: 0 });
+
+    const broken = {
+      ...deps,
+      origin: () => {
+        throw new Error("config");
+      },
+    };
+    expect(await poll(broken)).toEqual({ received: 2, processed: 0, discarded: 1, failed: 1 });
+    expect(sqs.deleted).toEqual(["rh-bad"]);
+    expect(sqs.messages).toHaveLength(1); // volta a ficar visível
+
+    expect(await poll()).toMatchObject({ processed: 1 });
+    expect(provider.calls).toHaveLength(1);
+  });
+
+  it("lost messages are recovered by reconciliation and re-published with the same attempt key", async () => {
+    const { campaignId } = await setup({ optedIn: 1 });
+    await confirm(campaignId);
+    const provider = new RecordingProvider();
+    const { deps, advance, sqs, poll } = sqsEngine(provider);
+    await processCampaignStep(campaignId, deps);
+    const lost = sqs.messages.splice(0, 1)[0];
+
+    advance(STALE_MS + 1_000);
+    await processCampaignStep(campaignId, deps); // reconcilia e volta a publicar
+    expect(sqs.messages).toHaveLength(1);
+    expect(sqs.messages[0].body).not.toBe(lost.body); // novo claimToken
+    await poll();
+    // A mensagem perdida reaparece: token antigo, não faz nada.
+    sqs.messages.push(lost);
+    await poll();
+    expect(provider.calls).toHaveLength(1);
+    const [recipient] = await prisma.campaignRecipient.findMany({ where: { campaignId } });
+    expect(recipient).toMatchObject({ status: "ACCEPTED", attempt: 1 });
   });
 });

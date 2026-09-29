@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isValidPhoneNumber } from "libphonenumber-js";
 import { getCampaignLimits, type CampaignLimits } from "@/features/campaigns/limits";
 import { getSendRateConfig, type SendRateConfig } from "@/features/rate-limit/rules";
+import { getSmsJobQueueConfig, type SmsJobQueueConfig } from "@/lib/aws/sqs-config";
 import { finalCampaignStatus, retryDelayMs, EMPTY_RECIPIENT_COUNTS } from "@/features/campaigns/processing-rules";
 import { prisma } from "@/lib/db/prisma";
 import { getSmsSegmentInfo } from "@/lib/sms/encoding";
@@ -12,6 +13,7 @@ import { prismaManualSendStore } from "@/server/repositories/prisma-manual-send-
 import { claimNextRecipient, recordProviderThrottle, type SendRateLimits } from "../send-rate";
 import { dispatchSms } from "../sms-dispatch";
 import { currentOrigin, originMismatch, phoneHash, type CampaignOrigin } from "./origin";
+import { SqsSmsJobQueue } from "./sqs-job-queue";
 
 /**
  * Motor de campanhas (CLAUDE.md §17-§19).
@@ -61,7 +63,19 @@ export type EngineDeps = {
   random: () => number;
   /** Espera curta dentro de um passo quando o limite de MPS está quase livre. Omitido = devolve "wait". */
   sleep?: (ms: number) => Promise<void>;
+  /** Fila de jobs. Omitida = DirectSmsJobQueue (envio dentro do passo). */
+  queue?: SmsJobQueue;
 };
+
+const QUEUE_WAIT_MS = 1_000;
+const QUEUE_ERROR_WAIT_MS = 5_000;
+
+/** Destinatários reservados e ainda não terminados (exclui reservas abandonadas). */
+function countInFlight(campaignId: string, now: Date) {
+  return prisma.campaignRecipient.count({
+    where: { campaignId, status: "PROCESSING", claimedAt: { gt: new Date(now.getTime() - STALE_MS) } },
+  });
+}
 
 /** Esperas de MPS até este valor são feitas dentro do passo (evita um pedido por mensagem). */
 export const IN_STEP_WAIT_MAX_MS = 2_000;
@@ -80,7 +94,13 @@ export function defaultEngineDeps(): EngineDeps {
     now: () => new Date(),
     random: Math.random,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    queue: jobQueueFromConfig(getSmsJobQueueConfig()),
   };
+}
+
+/** `SMS_JOB_QUEUE=direct` → envio dentro do passo; `sqs` → publicação no SQS. */
+export function jobQueueFromConfig(config: SmsJobQueueConfig): SmsJobQueue | undefined {
+  return config.kind === "sqs" ? new SqsSmsJobQueue(config) : undefined;
 }
 
 export function idempotencyKeyFor(campaignId: string, recipientId: string, attempt: number) {
@@ -95,13 +115,19 @@ export type SendSmsJob = { campaignId: string; recipientId: string; claimToken: 
 
 export interface SmsJobQueue {
   enqueue(job: SendSmsJob): Promise<void>;
+  /**
+   * Filas assíncronas: máximo de destinatários em PROCESSING por campanha. O passo não
+   * reserva mais enquanto houver este número em curso (limita a rajada dos consumidores,
+   * já que o rate limit é aplicado na reserva). Omitido = fila síncrona.
+   */
+  readonly maxInFlight?: number;
 }
 
 /**
  * Implementação para o MVP: executa o job de imediato, dentro do passo (limitado a
- * `batchSize`). Em produção, um `SqsSmsJobQueue` publicaria o job e um worker chamaria
- * `sendCampaignRecipient` — os efeitos ao nível da campanha (pausa, backoff) já são
- * escritos na base de dados pelo próprio job, pelo que o passo não depende do resultado.
+ * `batchSize`). Com `SqsSmsJobQueue` o passo publica o job e `pnpm worker:sms-jobs` chama
+ * `sendCampaignRecipient` — os efeitos ao nível da campanha (pausa, backoff) são escritos
+ * na base de dados pelo próprio job, pelo que o passo não depende do resultado.
  */
 export class DirectSmsJobQueue implements SmsJobQueue {
   constructor(private readonly deps: EngineDeps) {}
@@ -188,6 +214,10 @@ export async function sendCampaignRecipient(job: SendSmsJob, deps: EngineDeps): 
           templateId: true,
           confirmedById: true,
           createdById: true,
+          mode: true,
+          provider: true,
+          originationHash: true,
+          nextStepAt: true,
         },
       },
     },
@@ -199,8 +229,17 @@ export async function sendCampaignRecipient(job: SendSmsJob, deps: EngineDeps): 
     await updateOwned(job, terminal("CANCELLED"));
     return;
   }
-  if (campaign.pausedAt || campaign.status !== "SENDING") {
+  // Pausa ou backoff de throttling ao nível da campanha: um job já publicado (SQS) espera.
+  if (campaign.pausedAt || campaign.status !== "SENDING" || (campaign.nextStepAt && campaign.nextStepAt > deps.now())) {
     await requeue(job, { status: "PENDING", claimToken: null });
+    return;
+  }
+  // O job pode correr noutro processo (worker SQS) com outra configuração: um envio
+  // confirmado em TESTE nunca pode sair por um processo em PRODUÇÃO (e vice-versa).
+  const mismatch = originMismatch(campaign, deps.origin());
+  if (mismatch) {
+    await requeue(job, { status: "PENDING", claimToken: null });
+    await haltCampaign(campaign.id, mismatch, deps, "ORIGIN_CHANGED");
     return;
   }
   if (!contact) {
@@ -407,7 +446,8 @@ export async function reconcileStaleRecipients(campaignId: string, deps: Pick<En
   const campaign = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { status: true } });
 
   for (const row of stale) {
-    const where = { id: row.id, status: "PROCESSING" as const, claimToken: row.claimToken };
+    // claimedAt no filtro: um job que reafirmou a posse entretanto não é tocado.
+    const where = { id: row.id, status: "PROCESSING" as const, claimToken: row.claimToken, claimedAt: { lt: threshold } };
     const message = await prisma.smsMessage.findUnique({
       where: { idempotencyKey: idempotencyKeyFor(campaignId, row.id, row.attempt) },
       select: { id: true, status: true, createdAt: true, errorCode: true },
@@ -475,7 +515,7 @@ export async function recipientCounts(campaignId: string) {
   return counts;
 }
 
-async function finalizeIfDone(campaignId: string, deps: Pick<EngineDeps, "now" | "logger">) {
+export async function finalizeIfDone(campaignId: string, deps: Pick<EngineDeps, "now" | "logger">) {
   const campaign = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { status: true, finishedAt: true } });
   if (!campaign) return;
   const counts = await recipientCounts(campaignId);
@@ -616,7 +656,7 @@ export async function processCampaignStep(campaignId: string, deps: EngineDeps):
         data: { status: "SENDING", startedAt: now },
       });
     }
-    const queue: SmsJobQueue = new DirectSmsJobQueue(deps);
+    const queue: SmsJobQueue = deps.queue ?? new DirectSmsJobQueue(deps);
 
     const stepStartedAt = deps.now().getTime();
     while (sent < deps.limits.batchSize && deps.now().getTime() - stepStartedAt < STEP_TIME_BUDGET_MS) {
@@ -633,6 +673,14 @@ export async function processCampaignStep(campaignId: string, deps: EngineDeps):
         data: { processingLeaseUntil: new Date(at.getTime() + LEASE_MS) },
       });
       if (renewed.count === 0) break;
+
+      if (queue.maxInFlight !== undefined) {
+        const inFlight = await countInFlight(campaignId, at);
+        if (inFlight >= queue.maxInFlight) {
+          result = { state: "wait", waitMs: QUEUE_WAIT_MS, reason: "A aguardar a fila de envio." };
+          break;
+        }
+      }
 
       const claim = await claimNextRecipient({ campaignId, claimToken: randomUUID(), limits: sendRateLimits(deps), now: at });
       if (claim.kind === "rate_limited") {
@@ -659,11 +707,28 @@ export async function processCampaignStep(campaignId: string, deps: EngineDeps):
         });
         if (next?.nextAttemptAt) {
           result = { state: "wait", waitMs: next.nextAttemptAt.getTime() - at.getTime(), reason: "A aguardar nova tentativa." };
+        } else if (queue.maxInFlight !== undefined && (await countInFlight(campaignId, at)) > 0) {
+          result = { state: "wait", waitMs: QUEUE_WAIT_MS, reason: "A aguardar a fila de envio." };
         }
         break;
       }
 
-      await queue.enqueue({ campaignId, recipientId: claim.recipient.id, claimToken: claim.recipient.claimToken });
+      const job = { campaignId, recipientId: claim.recipient.id, claimToken: claim.recipient.claimToken };
+      try {
+        await queue.enqueue(job);
+      } catch (error) {
+        // Publicação falhada: nada foi enviado. Libertar a reserva (mesma tentativa) e esperar.
+        await prisma.campaignRecipient.updateMany({
+          where: { id: job.recipientId, status: "PROCESSING", claimToken: job.claimToken },
+          data: { status: "PENDING", claimToken: null },
+        });
+        deps.logger.log("error", "campaign.queue.enqueue_failed", {
+          campaignId,
+          errorCode: error instanceof Error ? error.name : "Error",
+        });
+        result = { state: "wait", waitMs: QUEUE_ERROR_WAIT_MS, reason: "Fila de envio indisponível; nova tentativa em breve." };
+        break;
+      }
       sent += 1;
     }
   } finally {

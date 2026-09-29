@@ -147,8 +147,8 @@ Garantias do motor (`src/server/services/campaigns/engine.ts`):
 - o SDK AWS é criado com `maxAttempts: 1` e timeouts finitos (3 s ligação / 10 s pedido):
   `SendTextMessage` não é idempotente na AWS, pelo que só a aplicação decide retries.
 
-Fila: `SmsJobQueue` com `DirectSmsJobQueue` (MVP: o job corre dentro do passo). Uma implementação
-`SqsSmsJobQueue` + worker é o passo seguinte para produção; o domínio não depende do SQS.
+Fila: `SmsJobQueue` com `DirectSmsJobQueue` (defeito: o job corre dentro do passo) ou
+`SqsSmsJobQueue` (`SMS_JOB_QUEUE=sqs`, ver [Fila SQS](#fila-sqs)); o domínio não depende do SQS.
 
 | Variável | Defeito | Significado |
 |---|---|---|
@@ -345,6 +345,42 @@ Recuperação do administrador: `pnpm db:seed` com `ADMIN_EMAIL`/`ADMIN_PASSWORD
 | `LOGIN_ATTEMPT_RETENTION_DAYS` | 30 | tentativas de login apagadas |
 | `AUDIT_IP_RETENTION_DAYS` | 90 | IP removido dos registos de auditoria (o registo mantém-se) |
 
+### Fila SQS
+
+Com `SMS_JOB_QUEUE=sqs`, o passo da campanha (página ou `pnpm worker:campaigns`) **reserva** o
+destinatário (rate limit incluído) e **publica** o job no Amazon SQS; `pnpm worker:sms-jobs`
+recebe (long polling), envia e apaga a mensagem. Pode haver vários consumidores.
+
+```text
+passo da campanha ──SendMessage──▶ SQS ──ReceiveMessage──▶ worker:sms-jobs ──▶ AWS End User Messaging SMS
+        (reserva + rate limit)        │                        (re-verifica consentimento, origem, envia)
+                                      └──▶ DLQ após maxReceiveCount
+```
+
+- **Corpo da mensagem**: só `campaignId`, `recipientId` e `claimToken` (sem números, nomes nem texto).
+- **Sem duplicados**: o SQS entrega pelo menos uma vez; o consumidor só atua se o destinatário ainda
+  tiver o mesmo `claimToken`, e a chave de idempotência impede um segundo pedido à AWS. Um worker que
+  morra a meio deixa o envio `UNKNOWN` (nunca repetido).
+- **Mensagens perdidas/atrasadas**: reservas com mais de 5 min são reconciliadas e publicadas de
+  novo com novo token; a mensagem antiga, se aparecer, não faz nada.
+- **Modo/origem**: o consumidor compara o modo (TESTE/PRODUÇÃO), o fornecedor e a origem com os
+  congelados na confirmação; se diferirem, **pausa a campanha em vez de enviar**. Configurar o
+  worker com o mesmo `.env` que a aplicação.
+- **Rajadas**: no máximo `SMS_SQS_MAX_IN_FLIGHT` destinatários em curso por campanha; o rate limit
+  é aplicado na reserva.
+- **Falhas**: publicação falhada liberta a reserva e o passo espera 5 s; erro no consumidor deixa a
+  mensagem voltar a ficar visível; mensagens inválidas são apagadas. Configurar uma **DLQ**.
+- Standard e FIFO suportadas (FIFO: `MessageGroupId` = campanha, deduplicação pela reserva).
+
+| Variável | Defeito | Significado |
+|---|---|---|
+| `SMS_JOB_QUEUE` | `direct` | `direct` ou `sqs` |
+| `AWS_SQS_SMS_JOBS_QUEUE_URL` | — | URL da fila (tem de estar em `AWS_REGION`) |
+| `SMS_SQS_MAX_IN_FLIGHT` | 10 | destinatários em curso por campanha |
+| `SMS_SQS_VISIBILITY_TIMEOUT_SECONDS` | 60 | visibility timeout da receção (30–900) |
+
+Criação da fila, DLQ e permissões IAM: `docs/AWS_SETUP.md` (secção 12, requer aprovação).
+
 ### Worker de campanhas
 
 `pnpm worker:campaigns` processa em segundo plano as campanhas **já iniciadas** por um operador
@@ -429,7 +465,8 @@ O `CLAUDE.md` contém o plano completo. A evolução recomendada é:
 
 1. criar na AWS o Configuration Set + SNS (comandos em docs/AWS_SETUP.md, requer aprovação);
 2. primeiro envio real autorizado seguindo a checklist do §47;
-3. `SqsSmsJobQueue` quando o volume justificar; limites por utilizador/campanha se necessário.
+3. criar a fila SQS + DLQ (docs/AWS_SETUP.md §12) e ativar `SMS_JOB_QUEUE=sqs` quando o volume justificar;
+4. métricas (queue depth, latência do provider) e limites por utilizador/campanha se necessário.
 
 ## Segurança
 

@@ -7,6 +7,7 @@ import { can } from "@/lib/auth/permissions";
 import { getCurrentUser, requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { redirectWith } from "@/lib/http/redirect-with";
+import { consoleLogger } from "@/lib/logging/logger";
 import { MANUAL_VARIABLES, type TemplateValues } from "@/lib/sms/templates";
 import {
   createCampaignDraft,
@@ -169,7 +170,7 @@ export async function campaignProgressAction(campaignId: string): Promise<Campai
   // aqui: nunca envia, só recupera estados.
   const campaign = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { status: true, finishedAt: true } });
   if (campaign?.status === "CANCELLED" && !campaign.finishedAt) {
-    await reconcileCampaign(campaignId, { now: () => new Date(), logger: defaultEngineDeps().logger });
+    await reconcileCampaign(campaignId, { now: () => new Date(), logger: consoleLogger });
   }
   return progressFor(campaignId, "progress");
 }

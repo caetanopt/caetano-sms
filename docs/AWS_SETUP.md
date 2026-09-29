@@ -68,6 +68,10 @@ AWS_SMS_PROTECT_CONFIGURATION_ID=
 
 Usar uma IAM Role com menor privilégio. Para a primeira versão, a aplicação precisa de enviar texto através de `sms-voice:SendTextMessage` para a identidade autorizada.
 
+Com `SMS_JOB_QUEUE=sqs` (secção 12), acrescentar apenas na fila de jobs: `sqs:SendMessage` para
+quem publica (aplicação web e `worker:campaigns`) e `sqs:ReceiveMessage`, `sqs:DeleteMessage`,
+`sqs:ChangeMessageVisibility` para `worker:sms-jobs` (que também precisa de `sms-voice:SendTextMessage`).
+
 Não usar credenciais administrativas.
 
 ## 8. Dry-run
@@ -180,3 +184,42 @@ Mensagens repetidas são ignoradas (MessageId SNS único). O payload nunca é re
 
 Alternativa mais robusta com tudo na AWS: SNS → SQS → worker (reutiliza `parseSmsEvent` e
 `PrismaSmsDeliveryEventHandler`).
+
+## 12. Fila SQS de envios — NÃO executado automaticamente
+
+> Cria recursos reais. Executar apenas com aprovação explícita, na região `AWS_REGION`.
+
+```bash
+# DLQ: mensagens que falharam várias vezes ficam aqui para análise (sem PII no corpo).
+aws sqs create-queue --queue-name sms-jobs-dlq --region eu-west-1 \
+  --attributes SqsManagedSseEnabled=true,MessageRetentionPeriod=1209600
+
+aws sqs create-queue --queue-name sms-jobs --region eu-west-1 --attributes '{
+  "SqsManagedSseEnabled": "true",
+  "VisibilityTimeout": "60",
+  "ReceiveMessageWaitTimeSeconds": "20",
+  "MessageRetentionPeriod": "86400",
+  "RedrivePolicy": "{\"deadLetterTargetArn\":\"<DLQ_ARN>\",\"maxReceiveCount\":\"5\"}"
+}'
+```
+
+Política IAM mínima (separar a role do publicador e a do consumidor quando possível):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Effect": "Allow", "Action": ["sqs:SendMessage"], "Resource": "arn:aws:sqs:eu-west-1:<CONTA>:sms-jobs" },
+    {
+      "Effect": "Allow",
+      "Action": ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility"],
+      "Resource": "arn:aws:sqs:eu-west-1:<CONTA>:sms-jobs"
+    }
+  ]
+}
+```
+
+Depois: `SMS_JOB_QUEUE=sqs`, `AWS_SQS_SMS_JOBS_QUEUE_URL=https://sqs.eu-west-1.amazonaws.com/<CONTA>/sms-jobs`
+e correr `pnpm worker:sms-jobs` (mesmo `.env` da aplicação) e `pnpm worker:campaigns`. Alarme
+CloudWatch recomendado: `ApproximateNumberOfMessagesVisible` da DLQ > 0.
+
