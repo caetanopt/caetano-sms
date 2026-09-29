@@ -2,6 +2,7 @@ import Link from "next/link";
 import { logoutAction } from "@/app/actions/auth";
 import { Feedback } from "@/components/feedback";
 import { MfaPanel } from "@/components/mfa/mfa-panel";
+import { QrCode } from "@/components/mfa/qr-code";
 import { requireUser } from "@/lib/auth/session";
 import { formatLisbon } from "@/lib/time/lisbon";
 import { getMfaStatus } from "@/server/services/mfa";
@@ -44,6 +45,7 @@ export default async function MfaPage({
                 required: status.required,
                 pending: status.pending ? { secretDisplay: status.pending.secretDisplay, uri: status.pending.uri } : null,
               }}
+              qr={status.pending ? <QrCode text={status.pending.uri} label="Código QR para configurar o 2FA na app de autenticação" /> : undefined}
             />
           ) : null}
         </div>

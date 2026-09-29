@@ -1,5 +1,6 @@
 import { expect, test, type Cookie, type Page } from "@playwright/test";
 import { base32Decode, totp } from "../src/features/auth/totp";
+import { decodeQrPath } from "../tests/helpers/qr-decode";
 import { E2E_METRICS_TOKEN } from "../playwright.config";
 import { E2E_ADMIN, E2E_ADMIN_TOTP_SECRET, E2E_VIEWER } from "./global-setup";
 
@@ -264,7 +265,13 @@ test("2FA: novo administrador é obrigado a configurar; login com código de rec
   await admin2.waitForURL("**/account/mfa");
   await expect(admin2.getByText("Os administradores têm de usar 2FA")).toBeVisible();
   await admin2.getByRole("button", { name: "Configurar 2FA" }).click();
-  const secret = ((await admin2.getByTestId("totp-secret").textContent()) ?? "").replace(/\s/g, "");
+  // O QR (lido como faria a app) contém o URI otpauth com a mesma chave mostrada em texto.
+  const qr = admin2.getByRole("img", { name: /Código QR/ });
+  const viewBox = (await qr.getAttribute("viewBox")) ?? "";
+  const decoded = decodeQrPath((await qr.locator("path").getAttribute("d")) ?? "", Number(viewBox.split(" ")[2]));
+  expect(decoded).toMatch(/^otpauth:\/\/totp\/SMS%20AWS%3Aadmin\.novo%40example\.com\?secret=/);
+  const secret = new URL(decoded ?? "").searchParams.get("secret") ?? "";
+  expect(((await admin2.getByTestId("totp-secret").textContent()) ?? "").replace(/\s/g, "")).toBe(secret);
   await admin2.fill("input[name=code]", "000000");
   await admin2.getByRole("button", { name: "Ativar 2FA" }).click();
   await expect(admin2.getByRole("alert").filter({ hasText: "Código incorreto" })).toBeVisible();

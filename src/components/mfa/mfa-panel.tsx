@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useState, type ReactNode } from "react";
 import { confirmMfaEnrollmentAction, disableMfaAction, regenerateRecoveryCodesAction, startMfaEnrollmentAction } from "@/app/actions/mfa";
 import { initialMfaFormState } from "@/features/auth/mfa-form-state";
 
@@ -49,7 +49,7 @@ function RecoveryCodes({ codes }: { codes: string[] }) {
  * Um único componente cliente para todos os estados: a sessão é renovada pelas actions (o que
  * atualiza a página) e os códigos de recuperação, que só existem no estado, não se perdem.
  */
-export function MfaPanel({ status }: { status: MfaPanelStatus }) {
+export function MfaPanel({ status, qr }: { status: MfaPanelStatus; qr?: ReactNode }) {
   const [confirmState, confirmAction, confirming] = useActionState(confirmMfaEnrollmentAction, initialMfaFormState);
   const [regenState, regenAction, regenerating] = useActionState(regenerateRecoveryCodesAction, initialMfaFormState);
   const [disableState, disableAction, disabling] = useActionState(disableMfaAction, initialMfaFormState);
@@ -74,13 +74,24 @@ export function MfaPanel({ status }: { status: MfaPanelStatus }) {
       {!status.enabled && status.pending ? (
         <section className="rounded-xl border border-slate-200 bg-white p-5">
           <h2 className="font-semibold">1. Adiciona a conta na app</h2>
-          <p className="mt-1 text-sm text-slate-600">
-            Na app, escolhe “introduzir chave manualmente” e usa a chave abaixo (tipo: baseada no tempo, 6 dígitos). Em
-            dispositivos com app instalada podes usar a <a href={status.pending.uri} className="underline">ligação direta</a>.
-          </p>
-          <code data-testid="totp-secret" className="mt-3 block rounded bg-slate-100 px-3 py-2 font-mono text-lg tracking-wider select-all">
-            {status.pending.secretDisplay}
-          </code>
+          <div className="mt-3 flex flex-wrap items-start gap-6">
+            {qr ? <div className="shrink-0">{qr}</div> : null}
+            <div className="min-w-0 flex-1 text-sm text-slate-600">
+              <p>Na app de autenticação, escolhe “adicionar conta” e lê o código QR com a câmara.</p>
+              <p className="mt-3">
+                Sem câmara? Escolhe “introduzir chave manualmente” e usa esta chave (tipo: baseada no tempo, 6 dígitos):
+              </p>
+              <code data-testid="totp-secret" className="mt-2 block rounded bg-slate-100 px-3 py-2 font-mono text-lg tracking-wider text-slate-900 select-all">
+                {status.pending.secretDisplay}
+              </code>
+              <p className="mt-3">
+                Neste dispositivo, com a app instalada: <a href={status.pending.uri} className="underline">abrir na app</a>.
+              </p>
+              <p className="mt-3 text-xs text-slate-500">
+                O código QR e a chave dão acesso ao segundo fator: não os partilhes nem tires capturas de ecrã.
+              </p>
+            </div>
+          </div>
           <h2 className="mt-6 font-semibold">2. Confirma com o código da app</h2>
           {confirmState.error ? <div role="alert" className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-800">{confirmState.error}</div> : null}
           <form action={confirmAction} className="mt-3 flex flex-wrap items-end gap-3">

@@ -336,10 +336,11 @@ Recuperação do administrador: `pnpm db:seed` com `ADMIN_EMAIL`/`ADMIN_PASSWORD
 ### Verificação em dois passos (2FA)
 
 **Obrigatória para ADMIN** (opcional para os outros perfis), com TOTP (RFC 6238: 6 dígitos, 30 s)
-compatível com Google/Microsoft Authenticator, 1Password, Bitwarden, etc. Implementada com
-`node:crypto`, sem dependências.
+compatível com Google/Microsoft Authenticator, 1Password, Bitwarden, etc. O TOTP usa só
+`node:crypto`; a única dependência é `qrcode` (geração da matriz do QR).
 
-- **Configuração** em `/account/mfa`: chave para introdução manual (e ligação `otpauth://`), confirmada
+- **Configuração** em `/account/mfa`: **código QR** (gerado no servidor com `qrcode` e desenhado como
+  SVG pelo React, sem pedidos externos), chave para introdução manual e ligação `otpauth://`; confirmada
   com um código antes de ativar. Um administrador sem 2FA só acede a esta página (e à alteração de
   palavra-passe), incluindo nas server actions. Ativar termina as outras sessões.
 - **Login**: palavra-passe → `/login/mfa` (cookie assinado de 5 min, ligado à versão de sessão) →
