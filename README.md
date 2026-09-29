@@ -388,6 +388,45 @@ Criação da fila, DLQ e permissões IAM: `docs/AWS_SETUP.md` (secção 12, requ
 paralelo com a página e com outras instâncias: o lease e as chaves de idempotência impedem
 duplicados. Termina de forma graciosa em `SIGTERM`.
 
+### Observabilidade
+
+As métricas são calculadas a partir da base de dados (fonte de verdade partilhada por todas as
+instâncias) e, com SQS, dos atributos da fila. Nunca incluem números, nomes ou texto de SMS.
+
+- **Página `/observability`** (só ADMIN): envios por janela (15 min / 1 h / 24 h) com aceites,
+  falhados, incertos, pendentes, throttling, envios de teste e latência do provider (p50/p95);
+  campanhas a enviar, pausadas (e por erro) e terminadas com falhas; destinatários presos/incertos;
+  aceites sem recibo há mais de 24 h; baldes de MPS abrandados; profundidade da fila SQS e DLQ;
+  erros por código; e **alertas** derivados.
+- **`GET /api/metrics`** (Prometheus, text format 0.0.4): desativado (404) sem `METRICS_TOKEN`;
+  exige `Authorization: Bearer <METRICS_TOKEN>`. Métricas `sms_*` do tipo gauge sobre janelas
+  (ex.: `sms_messages_window{window,outcome}`, `sms_throttled_window`, `sms_errors_window{code}`,
+  `sms_provider_latency_ms{window,quantile}`, `sms_campaigns_paused_with_error`,
+  `sms_campaign_recipients_stuck`, `sms_queue_messages{queue,state}`, `sms_queue_up`).
+- **CloudWatch EMF**: com `METRICS_EMF=true`, `pnpm worker:campaigns` escreve a cada
+  `METRICS_EMF_INTERVAL_SECONDS` uma linha JSON que o CloudWatch Logs converte em métricas no
+  namespace `METRICS_EMF_NAMESPACE` (sem chamadas à AWS). Ativar num único worker.
+- A latência de cada chamada ao provider fica em `SmsMessage.providerLatencyMs`; os logs
+  `sms.send.*` e `sms.job.*` incluem `durationMs`.
+
+| Alerta | Nível | Regra |
+|---|---|---|
+| campanha pausada por erro | crítico | circuit breaker ativo |
+| erros de conta AWS | crítico | `AUTH_ERROR`/`CONFIGURATION_ERROR`/`SPEND_LIMIT`/`QUOTA_EXCEEDED` em 15 min |
+| taxa de falhas | crítico | > 20% com ≥ 20 resultados em 15 min |
+| fila SQS ilegível / DLQ com mensagens | crítico | `sms_queue_up = 0` / DLQ > 0 |
+| throttling, resultados incertos | aviso | > 0 em 15 min |
+| destinatários presos | aviso | `PROCESSING` há mais de 5 min |
+| sem recibo de entrega | aviso | aceites há > 24 h (só com eventos configurados) |
+
+| Variável | Defeito | Significado |
+|---|---|---|
+| `METRICS_TOKEN` | — | token do `/api/metrics` (≥ 32 caracteres, segredo) |
+| `METRICS_EMF` | `false` | snapshot EMF no worker de campanhas |
+| `METRICS_EMF_INTERVAL_SECONDS` | 60 | intervalo do snapshot (10–3600) |
+| `METRICS_EMF_NAMESPACE` | `SmsApp` | namespace CloudWatch |
+| `AWS_SQS_SMS_JOBS_DLQ_URL` | — | DLQ, só para a métrica de profundidade |
+
 ## Deployment
 
 Requisitos: Node 22.12+, PostgreSQL 16, HTTPS, gestor de segredos da plataforma, IAM Role (sem access keys).
@@ -408,6 +447,8 @@ pnpm retention --apply            # cron diário, depois de validados os prazos
   (verifica a base de dados; 503 se indisponível). Nenhum envia SMS.
 - Backups diários do PostgreSQL com retenção alinhada com a política acima; testar restauros.
 - Logs JSON no stdout (sem números completos nem texto das mensagens) → CloudWatch/agregador.
+- Métricas: `/api/metrics` (Prometheus, com `METRICS_TOKEN`) ou EMF no worker; ver
+  [Observabilidade](#observabilidade).
 - Na AWS (quando aplicável): App Runner/ECS + RDS PostgreSQL + Secrets Manager; o worker como
   serviço separado. Não criar infraestrutura antes de haver necessidade real (§45).
 
@@ -466,7 +507,8 @@ O `CLAUDE.md` contém o plano completo. A evolução recomendada é:
 1. criar na AWS o Configuration Set + SNS (comandos em docs/AWS_SETUP.md, requer aprovação);
 2. primeiro envio real autorizado seguindo a checklist do §47;
 3. criar a fila SQS + DLQ (docs/AWS_SETUP.md §12) e ativar `SMS_JOB_QUEUE=sqs` quando o volume justificar;
-4. métricas (queue depth, latência do provider) e limites por utilizador/campanha se necessário.
+4. alarmes CloudWatch sobre as métricas EMF (DLQ, campanhas pausadas por erro, throttling);
+5. limites por utilizador/campanha se necessário.
 
 ## Segurança
 

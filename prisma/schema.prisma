@@ -176,6 +176,8 @@ model SmsMessage {
   errorMessage         String?
   providerErrorName    String?
   providerRequestId    String?
+  /// Duração da chamada ao provider (observabilidade, CLAUDE.md §32).
+  providerLatencyMs    Int?
   sentAt               DateTime?
   deliveredAt          DateTime?
   failedAt             DateTime?

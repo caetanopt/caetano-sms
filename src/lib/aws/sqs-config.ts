@@ -15,6 +15,8 @@ export type SmsJobQueueConfig =
       /** Máximo de destinatários em PROCESSING por campanha (limita rajadas do consumidor). */
       maxInFlight: number;
       visibilityTimeoutSeconds: number;
+      /** DLQ, só para métricas (profundidade). Opcional. */
+      dlqUrl?: string;
     };
 
 type Env = Record<string, string | undefined>;
@@ -44,8 +46,17 @@ export function getSmsJobQueueConfig(env: Env = process.env): SmsJobQueueConfig 
   // Todos os recursos na região da aplicação (CLAUDE.md §7).
   if (match[1] !== region) throw new SmsConfigurationError("A fila SQS tem de estar na região AWS_REGION");
 
+  const dlqRaw = env.AWS_SQS_SMS_JOBS_DLQ_URL ?? "";
+  let dlqUrl: string | undefined;
+  if (dlqRaw !== "") {
+    const dlq = QUEUE_URL.exec(dlqRaw);
+    if (!dlq || dlq[1] !== region) throw new SmsConfigurationError("AWS_SQS_SMS_JOBS_DLQ_URL inválido ou fora de AWS_REGION");
+    dlqUrl = dlqRaw;
+  }
+
   return {
     kind: "sqs",
+    dlqUrl,
     region,
     queueUrl,
     fifo: match[2] === ".fifo",

@@ -35,9 +35,10 @@ export type PendingMessageData = {
 };
 
 export type MessageOutcomeUpdate =
-  | { status: "ACCEPTED"; awsMessageId: string; provider: string; sentAt: Date }
+  | { status: "ACCEPTED"; awsMessageId: string; provider: string; sentAt: Date; providerLatencyMs: number }
   | {
       status: "FAILED" | "UNKNOWN";
+      providerLatencyMs: number;
       errorCode: SmsErrorCode;
       errorMessage: string;
       providerErrorName?: string;
@@ -145,7 +146,7 @@ export async function dispatchSms(input: DispatchInput, deps: DispatchDeps): Pro
   if (result.ok) {
     await store.completeMessage(
       created.id,
-      { status: "ACCEPTED", awsMessageId: result.messageId, provider: result.provider, sentAt: now() },
+      { status: "ACCEPTED", awsMessageId: result.messageId, provider: result.provider, sentAt: now(), providerLatencyMs: durationMs },
       audit("SMS_SEND_ACCEPTED", {
         provider: result.provider,
         messageType: message.messageType,
@@ -173,6 +174,7 @@ export async function dispatchSms(input: DispatchInput, deps: DispatchDeps): Pro
       providerErrorName: result.providerErrorName,
       providerRequestId: result.providerRequestId,
       failedAt: result.uncertain ? null : now(),
+      providerLatencyMs: durationMs,
     },
     audit(result.uncertain ? "SMS_SEND_UNCERTAIN" : "SMS_SEND_FAILED", {
       errorCode: result.errorCode,

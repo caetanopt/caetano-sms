@@ -21,6 +21,7 @@ describe("getSmsJobQueueConfig", () => {
       fifo: true,
       maxInFlight: 10,
       visibilityTimeoutSeconds: 60,
+      dlqUrl: undefined,
     });
   });
 
@@ -33,6 +34,8 @@ describe("getSmsJobQueueConfig", () => {
     expect(() => getSmsJobQueueConfig({ ...base, AWS_REGION: "us-east-1" })).toThrow(/região/);
     expect(() => getSmsJobQueueConfig({ ...base, SMS_SQS_VISIBILITY_TIMEOUT_SECONDS: "10" })).toThrow(/VISIBILITY/);
     expect(() => getSmsJobQueueConfig({ ...base, SMS_SQS_MAX_IN_FLIGHT: "0" })).toThrow(/IN_FLIGHT/);
+    expect(() => getSmsJobQueueConfig({ ...base, AWS_SQS_SMS_JOBS_DLQ_URL: "https://sqs.us-east-1.amazonaws.com/123456789012/dlq" })).toThrow(/DLQ/);
+    expect(getSmsJobQueueConfig({ ...base, AWS_SQS_SMS_JOBS_DLQ_URL: `${URL_STD}-dlq` })).toMatchObject({ dlqUrl: `${URL_STD}-dlq` });
   });
 });
 

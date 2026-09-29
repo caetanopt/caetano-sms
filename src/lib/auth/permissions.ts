@@ -13,6 +13,8 @@ export type Permission =
   /** Confirmar, processar e cancelar campanhas. */
   | "campaigns:send"
   | "users:manage"
+  /** Métricas operacionais (página /observability). */
+  | "observability:view"
   | "sms:send";
 
 const MATRIX: Record<Permission, readonly Role[]> = {
@@ -27,6 +29,7 @@ const MATRIX: Record<Permission, readonly Role[]> = {
   "campaigns:send": ["ADMIN", "OPERATOR"],
   "sms:send": ["ADMIN", "OPERATOR"],
   "users:manage": ["ADMIN"],
+  "observability:view": ["ADMIN"],
 };
 
 /** Verificação feita sempre no servidor, com a role lida da base de dados. */

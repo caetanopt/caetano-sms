@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { E2E_METRICS_TOKEN } from "../playwright.config";
 import { E2E_ADMIN, E2E_VIEWER } from "./global-setup";
 
 // Fluxos do CLAUDE.md §33: login, contacto, template, envio dry-run, histórico,
@@ -138,6 +139,31 @@ test("headers de segurança e prontidão", async ({ request }) => {
   expect(response.headers()["x-powered-by"]).toBeUndefined();
   const ready = await request.get("/api/health/ready");
   expect(await ready.json()).toEqual({ status: "ok" });
+});
+
+test("observabilidade: página só para ADMIN e métricas Prometheus com token", async ({ page, request }) => {
+  await login(page, E2E_ADMIN);
+  await page.getByRole("link", { name: "Observabilidade" }).click();
+  await expect(page.getByRole("heading", { name: "Observabilidade" })).toBeVisible();
+  // Mensagens das fases anteriores (dry-run) aparecem na janela de 24 h.
+  const sends = page.getByRole("region", { name: "Envios por janela" });
+  await expect(sends.getByRole("row", { name: /24 horas/ })).toBeVisible();
+  await expect(page.getByText("fila direta (sem SQS)")).toBeVisible();
+
+  expect((await request.get("/api/metrics")).status()).toBe(401);
+  const metrics = await request.get("/api/metrics", { headers: { authorization: `Bearer ${E2E_METRICS_TOKEN}` } });
+  expect(metrics.status()).toBe(200);
+  const body = await metrics.text();
+  expect(body).toContain('sms_app_info{mode="TEST",provider="fake",queue="direct"} 1');
+  expect(body).toMatch(/sms_messages_window\{window="24h",outcome="accepted"\} [1-9]/);
+  expect(body).not.toMatch(/\+351/);
+});
+
+test("VIEWER não acede à observabilidade", async ({ page }) => {
+  await login(page, E2E_VIEWER);
+  await expect(page.getByRole("link", { name: "Observabilidade" })).toHaveCount(0);
+  await page.goto("/observability");
+  await page.waitForURL("**/dashboard");
 });
 
 test("gestão de utilizadores: criar, palavra-passe temporária obrigatória, desativar", async ({ page, browser }) => {

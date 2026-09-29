@@ -71,6 +71,8 @@ Usar uma IAM Role com menor privilégio. Para a primeira versão, a aplicação 
 Com `SMS_JOB_QUEUE=sqs` (secção 12), acrescentar apenas na fila de jobs: `sqs:SendMessage` para
 quem publica (aplicação web e `worker:campaigns`) e `sqs:ReceiveMessage`, `sqs:DeleteMessage`,
 `sqs:ChangeMessageVisibility` para `worker:sms-jobs` (que também precisa de `sms-voice:SendTextMessage`).
+Para a métrica de profundidade da fila (página `/observability` e `/api/metrics`), a aplicação web
+precisa de `sqs:GetQueueAttributes` na fila e na DLQ; sem ela a fila aparece como indisponível.
 
 Não usar credenciais administrativas.
 
@@ -222,4 +224,25 @@ Política IAM mínima (separar a role do publicador e a do consumidor quando pos
 Depois: `SMS_JOB_QUEUE=sqs`, `AWS_SQS_SMS_JOBS_QUEUE_URL=https://sqs.eu-west-1.amazonaws.com/<CONTA>/sms-jobs`
 e correr `pnpm worker:sms-jobs` (mesmo `.env` da aplicação) e `pnpm worker:campaigns`. Alarme
 CloudWatch recomendado: `ApproximateNumberOfMessagesVisible` da DLQ > 0.
+
+## 13. Métricas e alarmes — NÃO executado automaticamente
+
+Com `METRICS_EMF=true`, o worker de campanhas publica métricas no namespace `SmsApp` (dimensão
+`Mode`) através dos logs — não precisa de permissões `cloudwatch:PutMetricData`. Alarmes sugeridos
+(ajustar ao volume):
+
+| Métrica | Condição |
+|---|---|
+| `DlqVisible` | > 0 |
+| `CampaignsPausedWithError` | > 0 |
+| `Throttled15m` | > 0 durante 3 períodos |
+| `RecipientsStuck` | > 0 durante 2 períodos |
+| `ProviderLatencyP95Ms` | > 5000 |
+
+```bash
+aws cloudwatch put-metric-alarm --region eu-west-1 --alarm-name sms-dlq-not-empty \
+  --namespace SmsApp --metric-name DlqVisible --dimensions Name=Mode,Value=PRODUCTION \
+  --statistic Maximum --period 300 --evaluation-periods 1 --threshold 0 \
+  --comparison-operator GreaterThanThreshold --alarm-actions <SNS_TOPIC_ARN_ALERTAS>
+```
 

@@ -23,6 +23,9 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
               {can(user.role, "users:manage") ? (
                 <Link href="/users" className="hover:text-slate-950">Utilizadores</Link>
               ) : null}
+              {can(user.role, "observability:view") ? (
+                <Link href="/observability" className="hover:text-slate-950">Observabilidade</Link>
+              ) : null}
             </nav>
           </div>
           <div className="flex items-center gap-4 text-sm">
