@@ -37,8 +37,9 @@ export async function loginAction(formData: FormData) {
     email: result.user.email,
     name: result.user.name,
     role: result.user.role,
+    sessionVersion: result.user.sessionVersion,
   });
-  redirect("/dashboard");
+  redirect(result.user.mustChangePassword ? "/account/password" : "/dashboard");
 }
 
 export async function logoutAction() {

@@ -1,13 +1,14 @@
 import { redirect } from "next/navigation";
 import { loginAction } from "@/app/actions/auth";
-import { readSession } from "@/lib/auth/session";
+import { getCurrentUser } from "@/lib/auth/session";
 
 export default async function LoginPage({
   searchParams,
 }: {
   searchParams: Promise<{ error?: string }>;
 }) {
-  if (await readSession()) redirect("/dashboard");
+  // Sessão inválida (versão antiga, conta desativada) não conta: evita ciclo de redirecionamentos.
+  if (await getCurrentUser()) redirect("/dashboard");
   const params = await searchParams;
 
   return (

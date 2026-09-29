@@ -11,7 +11,17 @@ function hmac(value: string) {
 }
 
 export type LoginResult =
-  | { ok: true; user: { id: string; email: string; name: string; role: "ADMIN" | "OPERATOR" | "VIEWER" } }
+  | {
+      ok: true;
+      user: {
+        id: string;
+        email: string;
+        name: string;
+        role: "ADMIN" | "OPERATOR" | "VIEWER";
+        sessionVersion: number;
+        mustChangePassword: boolean;
+      };
+    }
   | { ok: false; reason: "invalid" | "blocked"; retryAfterMs?: number };
 
 export async function attemptLogin(input: { email: string; password: string; ip: string | null; now?: Date }): Promise<LoginResult> {
@@ -58,5 +68,16 @@ export async function attemptLogin(input: { email: string; password: string; ip:
     }),
   ]);
   if (!success || !user) return { ok: false, reason: "invalid" };
-  return { ok: true, user: { id: user.id, email: user.email, name: user.name, role: user.role } };
+  await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: now } });
+  return {
+    ok: true,
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      sessionVersion: user.sessionVersion,
+      mustChangePassword: user.mustChangePassword,
+    },
+  };
 }

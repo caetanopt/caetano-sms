@@ -69,6 +69,12 @@ model User {
   passwordHash       String
   role               UserRole       @default(OPERATOR)
   isActive           Boolean        @default(true)
+  /// Incrementado ao repor/alterar a palavra-passe, desativar ou mudar o perfil: invalida sessões abertas.
+  sessionVersion     Int            @default(0)
+  /// Palavra-passe temporária: troca obrigatória no próximo login.
+  mustChangePassword Boolean        @default(false)
+  passwordChangedAt  DateTime?
+  lastLoginAt        DateTime?
   messages           SmsMessage[]
   auditLogs          AuditLog[]
   consentEvents      ConsentEvent[]

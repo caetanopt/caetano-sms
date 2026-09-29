@@ -7,7 +7,7 @@ Starter para uma aplicação web de envio de SMS através do **AWS End User Mess
 - Next.js 16 + TypeScript strict
 - PostgreSQL + Prisma ORM 7
 - autenticação local com sessão HTTP-only
-- roles ADMIN / OPERATOR / VIEWER
+- roles ADMIN / OPERATOR / VIEWER e gestão de utilizadores pela UI
 - contactos com histórico de consentimento, opt-out e suppression list local
 - listas de contactos e importação CSV com validação
 - templates com variáveis de whitelist e pré-visualização
@@ -281,6 +281,25 @@ com telefone mascarado e sem o texto da mensagem.
 - **Dependências**: `pnpm audit` sem vulnerabilidades conhecidas (overrides em `pnpm-workspace.yaml`
   para dependências transitivas da CLI do Prisma).
 
+### Gestão de utilizadores
+
+Página `/users` (só ADMIN; não existe registo público):
+
+- **criar** utilizador com perfil obrigatório; é gerada uma palavra-passe temporária mostrada **uma
+  única vez** (nunca em URL, logs, auditoria nem email). No primeiro login o utilizador só consegue
+  aceder a `/account/password` até definir a sua;
+- **editar** nome, perfil e estado. Ninguém altera o próprio perfil nem se desativa, e nunca fica
+  zero administradores ativos (transação serializável);
+- **repor palavra-passe** de outro utilizador (nova temporária);
+- auditoria recente da conta (`USER_CREATED`, `USER_ROLE_CHANGED`, `USER_DEACTIVATED`,
+  `USER_PASSWORD_RESET`, `PASSWORD_CHANGED`, …).
+
+Todos os utilizadores alteram a própria palavra-passe em `/account/password` (exige a atual; mínimo
+12 caracteres, sem o email nem palavras comuns). **Sessões**: o token guarda uma versão de sessão
+validada na base de dados em cada pedido; mudar perfil, desativar, repor ou alterar palavra-passe
+termina de imediato as sessões abertas. Contas desativadas mantêm histórico e auditoria.
+Recuperação do administrador: `pnpm db:seed` com `ADMIN_EMAIL`/`ADMIN_PASSWORD` repõe a conta.
+
 ### Retenção de dados
 
 `pnpm retention` mostra o que seria alterado; `pnpm retention --apply` aplica (auditado como
@@ -377,8 +396,7 @@ O `CLAUDE.md` contém o plano completo. A evolução recomendada é:
 
 1. criar na AWS o Configuration Set + SNS (comandos em docs/AWS_SETUP.md, requer aprovação);
 2. primeiro envio real autorizado seguindo a checklist do §47;
-3. gestão de utilizadores pela UI;
-4. rate limiting por identidade/país (MPS), `SqsSmsJobQueue` quando o volume justificar.
+3. rate limiting por identidade/país (MPS), `SqsSmsJobQueue` quando o volume justificar.
 
 ## Segurança
 

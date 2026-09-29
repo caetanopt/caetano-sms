@@ -27,11 +27,15 @@ await prisma.user.upsert({
     passwordHash,
     role: UserRole.ADMIN,
   },
+  // Voltar a correr o seed serve de recuperação do administrador: termina as sessões antigas.
   update: {
     name,
     passwordHash,
     role: UserRole.ADMIN,
     isActive: true,
+    mustChangePassword: false,
+    passwordChangedAt: new Date(),
+    sessionVersion: { increment: 1 },
   },
 });
 

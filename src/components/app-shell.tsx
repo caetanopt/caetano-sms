@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { logoutAction } from "@/app/actions/auth";
+import { can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
 
 export async function AppShell({ children }: { children: React.ReactNode }) {
@@ -19,12 +20,17 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
               <Link href="/templates" className="hover:text-slate-950">Templates</Link>
               <Link href="/campaigns" className="hover:text-slate-950">Campanhas</Link>
               <Link href="/messages" className="hover:text-slate-950">Histórico</Link>
+              {can(user.role, "users:manage") ? (
+                <Link href="/users" className="hover:text-slate-950">Utilizadores</Link>
+              ) : null}
             </nav>
           </div>
           <div className="flex items-center gap-4 text-sm">
             <div className="text-right">
               <div className="font-medium">{user.name}</div>
-              <div className="text-xs text-slate-500">{user.role}</div>
+              <div className="text-xs text-slate-500">
+                {user.role} · <Link href="/account/password" className="hover:underline">Palavra-passe</Link>
+              </div>
             </div>
             <form action={logoutAction}>
               <button className="rounded-lg border border-slate-300 px-3 py-2 hover:bg-slate-50">Sair</button>

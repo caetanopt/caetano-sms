@@ -12,6 +12,7 @@ export type Permission =
   | "campaigns:write"
   /** Confirmar, processar e cancelar campanhas. */
   | "campaigns:send"
+  | "users:manage"
   | "sms:send";
 
 const MATRIX: Record<Permission, readonly Role[]> = {
@@ -25,6 +26,7 @@ const MATRIX: Record<Permission, readonly Role[]> = {
   "campaigns:write": ["ADMIN", "OPERATOR"],
   "campaigns:send": ["ADMIN", "OPERATOR"],
   "sms:send": ["ADMIN", "OPERATOR"],
+  "users:manage": ["ADMIN"],
 };
 
 /** Verificação feita sempre no servidor, com a role lida da base de dados. */

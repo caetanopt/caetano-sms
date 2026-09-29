@@ -139,6 +139,50 @@ test("headers de segurança e prontidão", async ({ request }) => {
   expect(await ready.json()).toEqual({ status: "ok" });
 });
 
+test("gestão de utilizadores: criar, palavra-passe temporária obrigatória, desativar", async ({ page, browser }) => {
+  await login(page, E2E_ADMIN);
+  await page.getByRole("link", { name: "Utilizadores" }).click();
+  await page.fill("main input[name=name]", "Operador Novo");
+  await page.fill("main input[name=email]", "novo.operador@example.com");
+  await page.selectOption("main select[name=role]", "OPERATOR");
+  await page.getByRole("button", { name: "Criar utilizador" }).click();
+  const temporary = (await page.getByTestId("temporary-password").textContent())?.trim() ?? "";
+  expect(temporary.length).toBeGreaterThanOrEqual(12);
+  await expect(page.locator("main table")).toContainText("Palavra-passe temporária");
+  expect(page.url()).not.toContain(temporary);
+
+  // O novo utilizador é obrigado a alterar a palavra-passe antes de usar a aplicação.
+  const other = await browser.newContext();
+  const userPage = await other.newPage();
+  await userPage.goto("/login");
+  await userPage.fill("input[name=email]", "novo.operador@example.com");
+  await userPage.fill("input[name=password]", temporary);
+  await userPage.click("button");
+  await userPage.waitForURL("**/account/password");
+  await userPage.goto("/campaigns");
+  await userPage.waitForURL("**/account/password");
+  await userPage.fill("input[name=currentPassword]", temporary);
+  await userPage.fill("input[name=newPassword]", "uma frase bem longa e segura");
+  await userPage.fill("input[name=confirmPassword]", "uma frase bem longa e segura");
+  await userPage.getByRole("button", { name: "Alterar palavra-passe" }).click();
+  await expect(userPage.getByRole("status")).toContainText("Palavra-passe alterada");
+  await userPage.goto("/dashboard");
+  await expect(userPage.getByRole("link", { name: "Utilizadores" })).toHaveCount(0);
+  await userPage.goto("/users");
+  await userPage.waitForURL("**/dashboard");
+
+  // Desativar termina a sessão aberta do utilizador.
+  await page.goto("/users");
+  await page.getByRole("link", { name: "Operador Novo" }).click();
+  await page.selectOption("main select[name=isActive]", "false");
+  await page.getByRole("button", { name: "Guardar" }).click();
+  await expect(page.locator("main [role=status]")).toContainText("Utilizador atualizado");
+  await userPage.goto("/dashboard");
+  await userPage.waitForURL("**/login?error=*");
+  await expect(userPage.getByText("Sessão terminada")).toBeVisible();
+  await other.close();
+});
+
 test("login bloqueado após tentativas falhadas, sem revelar a conta", async ({ page }) => {
   for (let i = 0; i < 5; i += 1) {
     await page.goto("/login");

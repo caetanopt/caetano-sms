@@ -4,7 +4,7 @@ import { z } from "zod";
 import { EMPTY_RECIPIENT_COUNTS } from "@/features/campaigns/processing-rules";
 import type { CampaignProgress } from "@/features/campaigns/progress";
 import { can } from "@/lib/auth/permissions";
-import { readSession, requireUser } from "@/lib/auth/session";
+import { getCurrentUser, requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { redirectWith } from "@/lib/http/redirect-with";
 import { MANUAL_VARIABLES, type TemplateValues } from "@/lib/sms/templates";
@@ -125,10 +125,8 @@ const FORBIDDEN: CampaignProgress = {
 
 /** Utilizador ativo lido da base de dados (nunca só o JWT). */
 async function activeUser() {
-  const session = await readSession();
-  if (!session) return null;
-  const user = await prisma.user.findUnique({ where: { id: session.userId }, select: { id: true, role: true, isActive: true } });
-  return user?.isActive ? user : null;
+  const user = await getCurrentUser();
+  return user && !user.mustChangePassword ? user : null;
 }
 
 /** Autenticação e perfil verificados em cada chamada (a partir da base de dados). */
