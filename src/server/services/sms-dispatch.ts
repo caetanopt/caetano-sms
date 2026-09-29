@@ -61,6 +61,8 @@ export type DispatchDeps = {
   provider: SmsProvider;
   logger: Logger;
   now: () => Date;
+  /** THROTTLED da AWS: feedback para o rate limiter (falhas aqui não afetam o resultado). */
+  onThrottled?: (phoneE164: string) => Promise<void>;
 };
 
 export type DispatchInput = {
@@ -179,6 +181,14 @@ export async function dispatchSms(input: DispatchInput, deps: DispatchDeps): Pro
       uncertain: result.uncertain,
     }),
   );
+
+  if (result.errorCode === "THROTTLED" && deps.onThrottled) {
+    try {
+      await deps.onThrottled(message.destinationPhoneE164);
+    } catch {
+      logger.log("warn", "sms.rate.feedback_failed", { messageInternalId: created.id });
+    }
+  }
 
   if (result.errorCode === "OPTED_OUT") {
     // Suppression list local: refletir o opt-out comunicado pelo fornecedor (sempre auditado).

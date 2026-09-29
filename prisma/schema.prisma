@@ -345,3 +345,14 @@ model SmsDeliveryEvent {
   @@index([awsMessageId])
   @@index([createdAt])
 }
+
+/// Token bucket de partes SMS por identidade de origem e país (CLAUDE.md §19).
+/// A chave contém um hash da identidade e o código do país; nunca números nem ARNs.
+model SendRateBucket {
+  key         String    @id
+  tokens      Float
+  rateFactor  Float     @default(1)
+  /// Último THROTTLED da AWS aplicado a este balde.
+  throttledAt DateTime?
+  updatedAt   DateTime
+}

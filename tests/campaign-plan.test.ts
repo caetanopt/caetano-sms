@@ -45,7 +45,15 @@ describe("planCampaign", () => {
         member({ contactId: "e", phoneE164: "+35112" }),
       ],
     });
-    expect(plan.counts).toEqual({ total: 5, eligible: 2, optedOut: 1, noConsent: 1, invalidPhone: 1, totalSegments: 2 });
+    expect(plan.counts).toEqual({
+      total: 5,
+      eligible: 2,
+      optedOut: 1,
+      noConsent: 1,
+      invalidPhone: 1,
+      totalSegments: 2,
+      segmentsByCountry: { PT: 2 },
+    });
     expect(plan.blockers).toEqual([]);
     expect(plan.recipients.find((r) => r.contactId === "b")).toMatchObject({
       eligible: true,

@@ -402,11 +402,43 @@ describe("executeManualSend", () => {
     const { deps, messages, provider } = setup();
     const outcome = await executeManualSend(request(), {
       ...deps,
-      checkRate: async () => ({ ok: false, retryAfterMs: 12_000 }),
+      checkRate: async () => ({ ok: false, retryAfterMs: 12_000, limit: "per_minute" }),
     });
     expect(outcome).toMatchObject({ kind: "rate_limited", message: expect.stringMatching(/12 s/) });
     expect(messages).toHaveLength(0);
     expect((provider as RecordingProvider).calls).toHaveLength(0);
+  });
+
+  it("reserves MPS capacity with destination and parts, and explains the MPS limit", async () => {
+    const { deps, messages } = setup();
+    const targets: { phoneE164: string; segments: number }[] = [];
+    const outcome = await executeManualSend(request({ message: "x".repeat(161) }), {
+      ...deps,
+      checkRate: async (target) => {
+        targets.push(target);
+        return { ok: false, retryAfterMs: 400, limit: "mps", label: "país PT" };
+      },
+    });
+    expect(targets).toEqual([{ phoneE164: expect.stringMatching(/^\+351/), segments: 2 }]);
+    expect(outcome).toMatchObject({ kind: "rate_limited", message: expect.stringMatching(/partes SMS por segundo \(país PT\).*1 s/) });
+    expect(messages).toHaveLength(0);
+  });
+
+  it("reports AWS throttling to the rate limiter", async () => {
+    const { deps } = setup({ scenario: "throttle" });
+    const throttled: string[] = [];
+    await executeManualSend(request(), { ...deps, onThrottled: async (phone) => void throttled.push(phone) });
+    expect(throttled).toEqual([expect.stringMatching(/^\+351/)]);
+
+    // Falhas do feedback não alteram o resultado do envio.
+    const failing = setup({ scenario: "throttle" });
+    const outcome = await executeManualSend(request(), {
+      ...failing.deps,
+      onThrottled: async () => {
+        throw new Error("db down");
+      },
+    });
+    expect(outcome).toMatchObject({ kind: "failed", errorCode: "THROTTLED" });
   });
 
   it("never logs or audits the full phone number or message body", async () => {

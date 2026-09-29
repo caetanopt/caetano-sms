@@ -141,8 +141,9 @@ Garantias do motor (`src/server/services/campaigns/engine.ts`):
 - erros de conta (autenticação, configuração, limite de gastos, quota) pausam a campanha sem gastar
   destinatários; throttling faz backoff exponencial com jitter ao nível da campanha;
 - se o modo (TESTE/PRODUÇÃO), o fornecedor ou a origem mudarem depois da confirmação, o envio para;
-- rate limit global `SMS_MAX_SENDS_PER_MINUTE` (campanhas + envio individual), serializado com
-  `pg_advisory_xact_lock` — exceção documentada à regra de SQL só pelo ORM (`src/server/services/send-rate.ts`);
+- rate limiting partilhado por campanhas e envio individual, serializado com `pg_advisory_xact_lock`
+  — exceção documentada à regra de SQL só pelo ORM (`src/server/services/send-rate.ts`). Ver
+  [Rate limiting](#rate-limiting-mps);
 - o SDK AWS é criado com `maxAttempts: 1` e timeouts finitos (3 s ligação / 10 s pedido):
   `SendTextMessage` não é idempotente na AWS, pelo que só a aplicação decide retries.
 
@@ -156,6 +157,38 @@ Fila: `SmsJobQueue` com `DirectSmsJobQueue` (MVP: o job corre dentro do passo). 
 | `SMS_CAMPAIGN_BATCH_SIZE` | 10 | mensagens por passo |
 | `SMS_BULK_CONFIRMATION_THRESHOLD` | 50 | acima disto pede "ENVIAR N SMS" |
 | `SMS_CAMPAIGN_MAX_ATTEMPTS` | 3 | tentativas por throttling antes de pausar |
+
+### Rate limiting (MPS)
+
+A AWS limita em **partes de mensagem por segundo (MPS)**, por identidade de origem e por país; os
+valores dependem da conta e do tipo de origem (ver consola AWS → *Account/Phone numbers/Sender IDs*).
+A aplicação aplica, antes de cada envio e de forma atómica:
+
+1. `SMS_MAX_SENDS_PER_MINUTE` — mensagens por minuto (global);
+2. token bucket da **identidade de origem** — `SMS_MPS_PER_ORIGIN` partes/s;
+3. token bucket de **(identidade de origem, país de destino)** — `SMS_MPS_BY_COUNTRY` ou
+   `SMS_MPS_COUNTRY_DEFAULT` partes/s.
+
+Cada mensagem consome tantos tokens quantas as partes estimadas (uma mensagem com mais partes do
+que a capacidade passa com o balde cheio e deixa saldo negativo). Os baldes estão na tabela
+`SendRateBucket`, com a identidade guardada só como hash. Quando a AWS responde **THROTTLED**, os
+baldes do destino são esvaziados e o ritmo cai para metade (mínimo 1/8), e depois recupera
+linearmente (+0,02×/s). O backoff da campanha e o limite de tentativas mantêm-se.
+
+As campanhas esperam dentro do passo quando a espera é curta (≤ 2 s); de outro modo o passo devolve
+"A aguardar" com o limite atingido. A revisão da campanha mostra a **duração mínima estimada** com
+estes limites. Um país lento pode atrasar os destinatários seguintes da mesma campanha (a ordem de
+envio é preservada).
+
+| Variável | Defeito | Significado |
+|---|---|---|
+| `SMS_MPS_PER_ORIGIN` | 1 | partes/s totais da identidade de origem |
+| `SMS_MPS_BY_COUNTRY` | — | por país, ex.: `PT=5,ES=1` (ISO 3166-1 alfa-2) |
+| `SMS_MPS_COUNTRY_DEFAULT` | 1 | partes/s para países sem valor explícito |
+| `SMS_MPS_BURST_SECONDS` | 1 | rajada: capacidade = MPS × segundos |
+
+Configurar **ao nível ou abaixo** do MPS indicado pela AWS. Com várias instâncias da aplicação, os
+limites são partilhados (estado na base de dados).
 
 Privacidade: o texto final por destinatário é apagado quando o destinatário termina ou o contacto
 é eliminado (o texto enviado fica em `SmsMessage`). **Retenção por definir com o DPO** (proposta: anonimizar
@@ -396,7 +429,7 @@ O `CLAUDE.md` contém o plano completo. A evolução recomendada é:
 
 1. criar na AWS o Configuration Set + SNS (comandos em docs/AWS_SETUP.md, requer aprovação);
 2. primeiro envio real autorizado seguindo a checklist do §47;
-3. rate limiting por identidade/país (MPS), `SqsSmsJobQueue` quando o volume justificar.
+3. `SqsSmsJobQueue` quando o volume justificar; limites por utilizador/campanha se necessário.
 
 ## Segurança
 

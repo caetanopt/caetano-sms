@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isValidPhoneNumber } from "libphonenumber-js";
 import { getCampaignLimits, type CampaignLimits } from "@/features/campaigns/limits";
+import { getSendRateConfig, type SendRateConfig } from "@/features/rate-limit/rules";
 import { finalCampaignStatus, retryDelayMs, EMPTY_RECIPIENT_COUNTS } from "@/features/campaigns/processing-rules";
 import { prisma } from "@/lib/db/prisma";
 import { getSmsSegmentInfo } from "@/lib/sms/encoding";
@@ -8,7 +9,7 @@ import { consoleLogger, type Logger } from "@/lib/logging/logger";
 import { getSmsProvider } from "@/lib/sms/provider";
 import type { SmsErrorCode, SmsProvider } from "@/lib/sms/types";
 import { prismaManualSendStore } from "@/server/repositories/prisma-manual-send-store";
-import { claimNextRecipient } from "../send-rate";
+import { claimNextRecipient, recordProviderThrottle, type SendRateLimits } from "../send-rate";
 import { dispatchSms } from "../sms-dispatch";
 import { currentOrigin, originMismatch, phoneHash, type CampaignOrigin } from "./origin";
 
@@ -54,9 +55,20 @@ export type EngineDeps = {
   getProvider: () => SmsProvider;
   logger: Logger;
   limits: CampaignLimits;
+  /** MPS por identidade de origem e país (CLAUDE.md §19). */
+  rate: SendRateConfig;
   now: () => Date;
   random: () => number;
+  /** Espera curta dentro de um passo quando o limite de MPS está quase livre. Omitido = devolve "wait". */
+  sleep?: (ms: number) => Promise<void>;
 };
+
+/** Esperas de MPS até este valor são feitas dentro do passo (evita um pedido por mensagem). */
+export const IN_STEP_WAIT_MAX_MS = 2_000;
+
+function sendRateLimits(deps: Pick<EngineDeps, "limits" | "rate" | "origin">): SendRateLimits {
+  return { maxPerMinute: deps.limits.maxSendsPerMinute, rate: deps.rate, originKey: deps.origin().originationHash };
+}
 
 export function defaultEngineDeps(): EngineDeps {
   return {
@@ -64,8 +76,10 @@ export function defaultEngineDeps(): EngineDeps {
     getProvider: () => getSmsProvider(),
     logger: consoleLogger,
     limits: getCampaignLimits(),
+    rate: getSendRateConfig(),
     now: () => new Date(),
     random: Math.random,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   };
 }
 
@@ -255,7 +269,14 @@ export async function sendCampaignRecipient(job: SendSmsJob, deps: EngineDeps): 
         auditMetadata: null,
         logFields: { campaignId: campaign.id },
       },
-      { store: prismaManualSendStore, config: origin.config, provider, logger: deps.logger, now: deps.now },
+      {
+        store: prismaManualSendStore,
+        config: origin.config,
+        provider,
+        logger: deps.logger,
+        now: deps.now,
+        onThrottled: (phoneE164) => recordProviderThrottle({ phoneE164 }, sendRateLimits(deps), deps.now()),
+      },
     );
   } catch {
     // Exceção fora do provider (ex.: base de dados). Decide pela existência do registo.
@@ -613,14 +634,21 @@ export async function processCampaignStep(campaignId: string, deps: EngineDeps):
       });
       if (renewed.count === 0) break;
 
-      const claim = await claimNextRecipient({
-        campaignId,
-        claimToken: randomUUID(),
-        maxPerMinute: deps.limits.maxSendsPerMinute,
-        now: at,
-      });
+      const claim = await claimNextRecipient({ campaignId, claimToken: randomUUID(), limits: sendRateLimits(deps), now: at });
       if (claim.kind === "rate_limited") {
-        result = { state: "wait", waitMs: claim.retryAfterMs, reason: "Limite interno de envios por minuto." };
+        const budgetLeft = STEP_TIME_BUDGET_MS - (deps.now().getTime() - stepStartedAt);
+        if (claim.limit === "mps" && deps.sleep && claim.retryAfterMs <= Math.min(IN_STEP_WAIT_MAX_MS, budgetLeft)) {
+          await deps.sleep(claim.retryAfterMs);
+          continue;
+        }
+        result = {
+          state: "wait",
+          waitMs: claim.retryAfterMs,
+          reason:
+            claim.limit === "per_minute"
+              ? "Limite interno de envios por minuto."
+              : `Limite de partes SMS por segundo (${claim.label ?? "origem"}).`,
+        };
         break;
       }
       if (claim.kind === "none") {

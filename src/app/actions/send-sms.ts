@@ -13,7 +13,9 @@ import { MANUAL_VARIABLES, type TemplateValues } from "@/lib/sms/templates";
 import { getSmsRuntimeConfig } from "@/lib/sms/config";
 import { getSmsProvider } from "@/lib/sms/provider";
 import { prismaManualSendStore } from "@/server/repositories/prisma-manual-send-store";
-import { checkSendRate } from "@/server/services/send-rate";
+import { getSendRateConfig } from "@/features/rate-limit/rules";
+import { currentOrigin } from "@/server/services/campaigns/origin";
+import { recordProviderThrottle, reserveSendCapacity } from "@/server/services/send-rate";
 import {
   executeManualSend,
   prepareManualSend,
@@ -55,13 +57,18 @@ function readVariables(formData: FormData): TemplateValues {
 
 function buildDeps(): ManualSendDeps | null {
   try {
-    const maxSendsPerMinute = getCampaignLimits().maxSendsPerMinute;
+    const limits = {
+      maxPerMinute: getCampaignLimits().maxSendsPerMinute,
+      rate: getSendRateConfig(),
+      originKey: currentOrigin().originationHash,
+    };
     return {
       store: prismaManualSendStore,
       config: getSmsRuntimeConfig(),
       getProvider: () => getSmsProvider(),
       logger: consoleLogger,
-      checkRate: () => checkSendRate(maxSendsPerMinute),
+      checkRate: (target) => reserveSendCapacity(target, limits),
+      onThrottled: (phoneE164) => recordProviderThrottle({ phoneE164 }, limits),
     };
   } catch {
     return null;

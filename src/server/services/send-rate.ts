@@ -1,9 +1,13 @@
 import type { Prisma } from "@/generated/prisma/client";
+import { bucketsFor, type SendRateConfig } from "@/features/rate-limit/rules";
+import { initialBucket, penalize, tryConsume, type BucketState } from "@/features/rate-limit/token-bucket";
 import { prisma } from "@/lib/db/prisma";
 
 /**
- * Rate limit global de envios (CLAUDE.md §19): SMS_MAX_SENDS_PER_MINUTE para
- * campanhas e envio individual em conjunto.
+ * Rate limiting de envios (CLAUDE.md §19), partilhado por campanhas e envio individual:
+ * - global: SMS_MAX_SENDS_PER_MINUTE mensagens por minuto;
+ * - token bucket de partes por segundo (MPS) por identidade de origem e por (origem, país),
+ *   que abranda automaticamente após THROTTLED da AWS.
  *
  * Exceção documentada à regra "SQL só através do ORM" (§28): usa-se
  * `pg_advisory_xact_lock` para serializar a verificação "contar e reservar" entre
@@ -29,13 +33,92 @@ async function lockAndCount(tx: Tx, now: Date) {
   return { used: messages + inFlight, retryAfterMs };
 }
 
-export type RateCheck = { ok: true } | { ok: false; retryAfterMs: number };
+export type SendRateLimits = {
+  maxPerMinute: number;
+  rate: SendRateConfig;
+  /** Identifica a identidade de origem atual (hash, ver `currentOrigin`). */
+  originKey: string;
+};
 
-/** Verificação para o envio individual (ritmo humano: sobreposição residual aceitável). */
-export async function checkSendRate(maxPerMinute: number, now = new Date()): Promise<RateCheck> {
-  return prisma.$transaction(async (tx) => {
-    const { used, retryAfterMs } = await lockAndCount(tx, now);
-    return used >= maxPerMinute ? { ok: false, retryAfterMs } : { ok: true };
+/** Destino e custo (partes estimadas) do envio a reservar. */
+export type SendTarget = { phoneE164: string; segments: number };
+
+export type RateCheck =
+  | { ok: true }
+  | { ok: false; retryAfterMs: number; limit: "per_minute" | "mps"; label?: string };
+
+type BucketRow = { key: string; tokens: number; rateFactor: number; updatedAt: Date };
+
+function toState(row: BucketRow | undefined, fallback: () => BucketState): BucketState {
+  return row ? { tokens: row.tokens, rateFactor: row.rateFactor, updatedAt: row.updatedAt } : fallback();
+}
+
+/**
+ * Consome `segments` tokens de todos os baldes do destino, ou nenhum (tudo-ou-nada).
+ * Tem de correr dentro da transação que detém o lock.
+ */
+async function consumeBuckets(tx: Tx, target: SendTarget, limits: SendRateLimits, now: Date): Promise<RateCheck> {
+  const buckets = bucketsFor({ originKey: limits.originKey, phoneE164: target.phoneE164 }, limits.rate);
+  const rows = await tx.sendRateBucket.findMany({ where: { key: { in: buckets.map((b) => b.key) } } });
+  const byKey = new Map(rows.map((row) => [row.key, row]));
+  const cost = Math.max(1, target.segments);
+
+  const next: { key: string; state: BucketState }[] = [];
+  let blocked: { retryAfterMs: number; label: string } | null = null;
+  for (const bucket of buckets) {
+    const state = toState(byKey.get(bucket.key), () => initialBucket(bucket.rule, now));
+    const result = tryConsume(state, bucket.rule, cost, now);
+    if (!result.ok) {
+      if (!blocked || result.retryAfterMs > blocked.retryAfterMs) blocked = { retryAfterMs: result.retryAfterMs, label: bucket.label };
+      continue;
+    }
+    next.push({ key: bucket.key, state: result.state });
+  }
+  if (blocked) return { ok: false, retryAfterMs: Math.max(100, blocked.retryAfterMs), limit: "mps", label: blocked.label };
+
+  for (const { key, state } of next) {
+    await tx.sendRateBucket.upsert({
+      where: { key },
+      create: { key, tokens: state.tokens, rateFactor: state.rateFactor, updatedAt: state.updatedAt },
+      update: { tokens: state.tokens, rateFactor: state.rateFactor, updatedAt: state.updatedAt },
+    });
+  }
+  return { ok: true };
+}
+
+async function reserve(tx: Tx, target: SendTarget, limits: SendRateLimits, now: Date): Promise<RateCheck> {
+  const { used, retryAfterMs } = await lockAndCount(tx, now);
+  if (used >= limits.maxPerMinute) return { ok: false, retryAfterMs, limit: "per_minute" };
+  return consumeBuckets(tx, target, limits, now);
+}
+
+/**
+ * Reserva capacidade para um envio individual (limite por minuto + MPS). A reserva é
+ * consumida mesmo que o envio acabe por não acontecer (conservador).
+ */
+export async function reserveSendCapacity(target: SendTarget, limits: SendRateLimits, now = new Date()): Promise<RateCheck> {
+  return prisma.$transaction((tx) => reserve(tx, target, limits, now));
+}
+
+/** THROTTLED da AWS: esvazia e abranda os baldes do destino (AIMD, ver token-bucket.ts). */
+export async function recordProviderThrottle(
+  target: Pick<SendTarget, "phoneE164">,
+  limits: Pick<SendRateLimits, "rate" | "originKey">,
+  now = new Date(),
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${SEND_RATE_LOCK_KEY})`;
+    const buckets = bucketsFor({ originKey: limits.originKey, phoneE164: target.phoneE164 }, limits.rate);
+    const rows = await tx.sendRateBucket.findMany({ where: { key: { in: buckets.map((b) => b.key) } } });
+    const byKey = new Map(rows.map((row) => [row.key, row]));
+    for (const bucket of buckets) {
+      const state = penalize(toState(byKey.get(bucket.key), () => initialBucket(bucket.rule, now)), bucket.rule, now);
+      await tx.sendRateBucket.upsert({
+        where: { key: bucket.key },
+        create: { key: bucket.key, tokens: state.tokens, rateFactor: state.rateFactor, updatedAt: now, throttledAt: now },
+        update: { tokens: state.tokens, rateFactor: state.rateFactor, updatedAt: now, throttledAt: now },
+      });
+    }
   });
 }
 
@@ -51,22 +134,22 @@ export type ClaimedRecipient = {
 
 export type ClaimResult =
   | { kind: "claimed"; recipient: ClaimedRecipient }
-  | { kind: "rate_limited"; retryAfterMs: number }
+  | { kind: "rate_limited"; retryAfterMs: number; limit: "per_minute" | "mps"; label?: string }
   | { kind: "none" };
 
 /**
  * Reserva o próximo destinatário PENDING de uma campanha, sob o lock de rate limit:
- * a contagem e a reserva são atómicas em relação a outros passos/campanhas.
+ * a contagem, o consumo de MPS e a reserva são atómicos em relação a outros passos/campanhas.
  */
 export async function claimNextRecipient(input: {
   campaignId: string;
   claimToken: string;
-  maxPerMinute: number;
+  limits: SendRateLimits;
   now: Date;
 }): Promise<ClaimResult> {
   return prisma.$transaction(async (tx) => {
     const { used, retryAfterMs } = await lockAndCount(tx, input.now);
-    if (used >= input.maxPerMinute) return { kind: "rate_limited", retryAfterMs };
+    if (used >= input.limits.maxPerMinute) return { kind: "rate_limited", retryAfterMs, limit: "per_minute" };
 
     const candidate = await tx.campaignRecipient.findFirst({
       where: {
@@ -75,9 +158,15 @@ export async function claimNextRecipient(input: {
         OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: input.now } }],
       },
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      select: { id: true },
+      select: { id: true, segments: true, contact: { select: { phoneE164: true } } },
     });
     if (!candidate) return { kind: "none" };
+
+    // Sem contacto/texto o envio não chega a acontecer (é ignorado/falhado): não consome MPS.
+    if (candidate.contact && candidate.segments !== null) {
+      const rate = await consumeBuckets(tx, { phoneE164: candidate.contact.phoneE164, segments: candidate.segments }, input.limits, input.now);
+      if (!rate.ok) return { kind: "rate_limited", retryAfterMs: rate.retryAfterMs, limit: rate.limit, label: rate.label };
+    }
 
     const { count } = await tx.campaignRecipient.updateMany({
       where: { id: candidate.id, status: "PENDING" },

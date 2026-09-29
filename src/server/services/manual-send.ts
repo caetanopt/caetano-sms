@@ -37,8 +37,12 @@ export type ManualSendDeps = {
   getProvider: () => SmsProvider;
   logger: Logger;
   now?: () => Date;
-  /** Rate limit global (SMS_MAX_SENDS_PER_MINUTE). Omitido = sem limite (testes). */
-  checkRate?: () => Promise<{ ok: true } | { ok: false; retryAfterMs: number }>;
+  /** Rate limit (por minuto + MPS por origem/país); reserva capacidade. Omitido = sem limite (testes). */
+  checkRate?: (target: { phoneE164: string; segments: number }) => Promise<
+    { ok: true } | { ok: false; retryAfterMs: number; limit: "per_minute" | "mps"; label?: string }
+  >;
+  /** Chamado quando a AWS responde THROTTLED (abranda os baldes de MPS). */
+  onThrottled?: (phoneE164: string) => Promise<void>;
 };
 
 // ---------------------------------------------------------------------------
@@ -249,12 +253,16 @@ export async function executeManualSend(
   }
 
   if (deps.checkRate) {
-    const rate = await deps.checkRate();
+    const rate = await deps.checkRate({ phoneE164: preview.phoneE164, segments: preview.segments.segments });
     if (!rate.ok) {
-      logger.log("warn", "sms.send.rate_limited", { userId: input.userId });
+      logger.log("warn", "sms.send.rate_limited", { userId: input.userId, errorCode: rate.limit });
+      const seconds = Math.max(1, Math.ceil(rate.retryAfterMs / 1000));
       return {
         kind: "rate_limited",
-        message: `Limite interno de envios por minuto atingido. Tenta novamente dentro de ${Math.ceil(rate.retryAfterMs / 1000)} s.`,
+        message:
+          rate.limit === "per_minute"
+            ? `Limite interno de envios por minuto atingido. Tenta novamente dentro de ${seconds} s.`
+            : `Limite de partes SMS por segundo (${rate.label ?? "origem"}) atingido. Tenta novamente dentro de ${seconds} s.`,
       };
     }
   }
@@ -276,7 +284,7 @@ export async function executeManualSend(
       source: "manual",
       auditMetadata: { legalBasisConfirmed: input.legalBasisConfirmed },
     },
-    { store, config, provider, logger, now },
+    { store, config, provider, logger, now, onThrottled: deps.onThrottled },
   );
 
   switch (outcome.kind) {

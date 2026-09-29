@@ -6,6 +6,9 @@ import { CampaignRunner } from "@/components/campaigns/campaign-runner";
 import { ConfirmForm } from "@/components/campaigns/confirm-form";
 import { Feedback } from "@/components/feedback";
 import { TestModeBanner } from "@/components/test-mode-banner";
+import { getCampaignLimits } from "@/features/campaigns/limits";
+import { estimateMinSendSeconds, formatDuration } from "@/features/rate-limit/estimate";
+import { getSendRateConfig } from "@/features/rate-limit/rules";
 import { campaignStatusLabel, RECIPIENT_STATUS_LABELS, SKIP_REASON_LABELS } from "@/features/campaigns/labels";
 import { can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
@@ -81,6 +84,17 @@ export default async function CampaignDetailPage({
     const eligibleRows = plan.recipients.filter((r) => r.eligible).slice(0, PREVIEW_ROWS);
     const excludedRows = plan.recipients.filter((r) => !r.eligible).slice(0, PREVIEW_ROWS);
     const example = plan.recipients.find((r) => r.eligible);
+    const rate = getSendRateConfig();
+    const minDuration = `${formatDuration(
+      estimateMinSendSeconds({
+        messages: plan.counts.eligible,
+        segmentsByCountry: plan.counts.segmentsByCountry,
+        originMps: rate.originMps,
+        countryMps: rate.countryMps,
+        defaultCountryMps: rate.defaultCountryMps,
+        maxPerMinute: getCampaignLimits().maxSendsPerMinute,
+      }),
+    )} (estimativa pelos limites internos)`;
 
     return (
       <div className="max-w-5xl space-y-6">
@@ -119,6 +133,7 @@ export default async function CampaignDetailPage({
                 ["Números inválidos", plan.counts.invalidPhone],
                 ["Partes SMS estimadas", plan.counts.totalSegments],
                 ["Origem", preview.origin.config.originationLabel],
+                ["Duração mínima estimada", minDuration],
                 ["Modo", testMode ? "TESTE" : "PRODUÇÃO"],
               ]}
             />

@@ -94,6 +94,7 @@ test("campanha: revisão §29, 2.ª confirmação, envio até concluir", async (
   await expect(summary).toContainText("Excluídos por opt-out1");
   await expect(summary).toContainText("Sem consentimento1");
   await expect(summary).toContainText("ModoTESTE");
+  await expect(summary).toContainText("Duração mínima estimada2 s (estimativa pelos limites internos)");
   // §10: número normalizado completo visível para quem pode enviar.
   await expect(summary).toContainText("+351912345678");
   await expect(summary).toContainText("Ola Maria, a loja abre dia 15/10.");

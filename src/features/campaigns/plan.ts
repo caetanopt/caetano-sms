@@ -7,6 +7,7 @@ import {
   type TemplateValues,
   type TemplateVariable,
 } from "@/lib/sms/templates";
+import { destinationCountry } from "@/features/rate-limit/estimate";
 import type { CampaignLimits } from "./limits";
 
 const MAX_UNITS = { GSM_7: 1530, UCS_2: 630 } as const;
@@ -35,6 +36,8 @@ export type CampaignPlanCounts = {
   invalidPhone: number;
   /** Soma das partes estimadas dos destinatários elegíveis. */
   totalSegments: number;
+  /** Partes estimadas por país de destino (para os limites de MPS). */
+  segmentsByCountry: Record<string, number>;
 };
 
 export type CampaignPlan = {
@@ -80,6 +83,7 @@ export function planCampaign(input: {
     noConsent: 0,
     invalidPhone: 0,
     totalSegments: 0,
+    segmentsByCountry: {},
   };
 
   for (const member of input.members) {
@@ -112,6 +116,8 @@ export function planCampaign(input: {
     recipients.push({ contactId: member.contactId, eligible: true, renderedBody: rendered.text, segments });
     counts.eligible += 1;
     counts.totalSegments += segments.segments;
+    const country = destinationCountry(member.phoneE164);
+    counts.segmentsByCountry[country] = (counts.segmentsByCountry[country] ?? 0) + segments.segments;
   }
 
   if (missingVariables.length > 0) {

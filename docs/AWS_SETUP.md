@@ -87,7 +87,7 @@ Antes do lançamento:
 - pedir production access para a região;
 - aumentar o spending threshold apenas para o volume necessário;
 - configurar alarmes de billing;
-- configurar rate limiting da aplicação;
+- configurar rate limiting da aplicação (`SMS_MPS_PER_ORIGIN`, `SMS_MPS_BY_COUNTRY`) com os MPS da conta;
 - validar regras por país.
 
 Getting started:

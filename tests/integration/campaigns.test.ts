@@ -17,7 +17,7 @@ import { currentOrigin } from "@/server/services/campaigns/origin";
 import { buildCampaignPreview } from "@/server/services/campaigns/preview";
 import { changeContactConsent, createContact, deleteContact, type Actor } from "@/server/services/contacts";
 import { addContactToList, createList } from "@/server/services/lists";
-import { checkSendRate } from "@/server/services/send-rate";
+import { reserveSendCapacity } from "@/server/services/send-rate";
 import { createActors, resetDatabase } from "./helpers";
 
 let actors: Record<"admin" | "operator" | "viewer", Actor>;
@@ -43,6 +43,10 @@ class RecordingProvider implements SmsProvider {
   }
 }
 
+const HIGH_RATE = { originMps: 1000, countryMps: {}, defaultCountryMps: 1000, burstSeconds: 1 };
+const checkPerMinute = (maxPerMinute: number) =>
+  reserveSendCapacity({ phoneE164: "+351912345678", segments: 1 }, { maxPerMinute, rate: HIGH_RATE, originKey: "test" });
+
 function engine(provider: RecordingProvider, overrides: Partial<EngineDeps> = {}) {
   let clock = Date.now();
   const deps: EngineDeps = {
@@ -50,6 +54,7 @@ function engine(provider: RecordingProvider, overrides: Partial<EngineDeps> = {}
     getProvider: () => provider,
     logger: { log: () => {} },
     limits: { maxRecipients: 500, maxSendsPerMinute: 1000, batchSize: 10, bulkConfirmationThreshold: 50, maxAttempts: 3 },
+    rate: HIGH_RATE,
     now: () => new Date(clock),
     random: () => 0.5,
     ...overrides,
@@ -228,7 +233,43 @@ describe("campaign processing", () => {
     const step = await processCampaignStep(campaignId, deps);
     expect(step).toMatchObject({ state: "wait", reason: expect.stringMatching(/por minuto/) });
     expect(provider.calls).toHaveLength(2);
-    expect(await checkSendRate(2)).toMatchObject({ ok: false });
+    expect(await checkPerMinute(2)).toMatchObject({ ok: false });
+  });
+
+  it("respects parts per second (MPS) per country: waits without sleep, paces within the step with sleep", async () => {
+    const { campaignId } = await setup({ optedIn: 3 });
+    await confirm(campaignId);
+    const provider = new RecordingProvider();
+    const slow = { originMps: 100, countryMps: { PT: 1 }, defaultCountryMps: 1, burstSeconds: 1 };
+    const { deps } = engine(provider, { rate: slow });
+    expect(await processCampaignStep(campaignId, deps)).toMatchObject({
+      state: "wait",
+      reason: expect.stringMatching(/partes SMS por segundo \(país PT\)/),
+    });
+    expect(provider.calls).toHaveLength(1);
+
+    // Com sleep: esperas curtas de MPS são feitas dentro do passo (o relógio avança).
+    const paced = engine(provider, { rate: slow });
+    const sleeps: number[] = [];
+    paced.deps.sleep = async (ms) => {
+      sleeps.push(ms);
+      paced.advance(ms);
+    };
+    paced.advance(1_000);
+    await processCampaignStep(campaignId, paced.deps);
+    expect(provider.calls).toHaveLength(3);
+    expect(sleeps.length).toBeGreaterThanOrEqual(1);
+    expect(sleeps.every((ms) => ms <= 1_000)).toBe(true);
+    expect(new Set(provider.calls.map((c) => c.context?.internalMessageId)).size).toBe(3);
+  });
+
+  it("feeds AWS throttling back into the MPS buckets", async () => {
+    const { campaignId } = await setup({ optedIn: 1 });
+    await confirm(campaignId);
+    await processCampaignStep(campaignId, engine(new RecordingProvider("throttle")).deps);
+    const buckets = await prisma.sendRateBucket.findMany();
+    expect(buckets).toHaveLength(2);
+    expect(buckets.every((b) => b.rateFactor === 0.5 && b.throttledAt !== null)).toBe(true);
   });
 
   it("retries throttling with backoff and a new attempt key, then pauses (never mass-fails) after max attempts", async () => {
@@ -503,7 +544,7 @@ describe("campaign safety edge cases", () => {
       where: { id: a.id },
       data: { status: "PROCESSING", claimToken: "dead", claimedAt: new Date(Date.now() - 120_000) },
     });
-    expect(await checkSendRate(1)).toEqual({ ok: true });
+    expect(await checkPerMinute(1)).toEqual({ ok: true });
   });
 
   it("campaign messages are linked to the campaign and to the confirming operator", async () => {
