@@ -10,6 +10,27 @@ function hmac(value: string) {
   return createHmac("sha256", process.env.AUTH_SECRET ?? "").update(value).digest("hex");
 }
 
+/** Identificadores das tentativas (só HMAC: nunca email/IP em claro). */
+export function attemptIdentifiers(email: string, ip: string | null) {
+  return { emailHash: hmac(`email:${email.trim().toLowerCase()}`), ipHash: ip ? hmac(`ip:${ip}`) : null };
+}
+
+/** Bloqueio partilhado por palavra-passe e segundo fator (5 falhas/email, 20/IP em 15 min). */
+export async function checkAttemptThrottle(ids: { emailHash: string; ipHash: string | null }, now: Date) {
+  const since = new Date(now.getTime() - LOGIN_WINDOW_MS);
+  const [emailFailures, ipFailures] = await Promise.all([
+    prisma.loginAttempt.findMany({ where: { emailHash: ids.emailHash, success: false, createdAt: { gt: since } }, select: { createdAt: true } }),
+    ids.ipHash
+      ? prisma.loginAttempt.findMany({ where: { ipHash: ids.ipHash, success: false, createdAt: { gt: since } }, select: { createdAt: true } })
+      : Promise.resolve([]),
+  ]);
+  return evaluateLoginThrottle({
+    now,
+    emailFailures: emailFailures.map((row) => row.createdAt),
+    ipFailures: ipFailures.map((row) => row.createdAt),
+  });
+}
+
 export type LoginResult =
   | {
       ok: true;
@@ -20,6 +41,8 @@ export type LoginResult =
         role: "ADMIN" | "OPERATOR" | "VIEWER";
         sessionVersion: number;
         mustChangePassword: boolean;
+        /** Falta o segundo fator: a sessão só é criada depois de /login/mfa. */
+        mfaRequired: boolean;
       };
     }
   | { ok: false; reason: "invalid" | "blocked"; retryAfterMs?: number };
@@ -27,21 +50,8 @@ export type LoginResult =
 export async function attemptLogin(input: { email: string; password: string; ip: string | null; now?: Date }): Promise<LoginResult> {
   const now = input.now ?? new Date();
   const email = input.email.trim().toLowerCase();
-  const emailHash = hmac(`email:${email}`);
-  const ipHash = input.ip ? hmac(`ip:${input.ip}`) : null;
-  const since = new Date(now.getTime() - LOGIN_WINDOW_MS);
-
-  const [emailFailures, ipFailures] = await Promise.all([
-    prisma.loginAttempt.findMany({ where: { emailHash, success: false, createdAt: { gt: since } }, select: { createdAt: true } }),
-    ipHash
-      ? prisma.loginAttempt.findMany({ where: { ipHash, success: false, createdAt: { gt: since } }, select: { createdAt: true } })
-      : Promise.resolve([]),
-  ]);
-  const decision = evaluateLoginThrottle({
-    now,
-    emailFailures: emailFailures.map((row) => row.createdAt),
-    ipFailures: ipFailures.map((row) => row.createdAt),
-  });
+  const { emailHash, ipHash } = attemptIdentifiers(email, input.ip);
+  const decision = await checkAttemptThrottle({ emailHash, ipHash }, now);
 
   const user = await prisma.user.findUnique({ where: { email } });
   if (!decision.allowed) {
@@ -54,12 +64,13 @@ export async function attemptLogin(input: { email: string; password: string; ip:
 
   const passwordOk = await bcrypt.compare(input.password, user?.passwordHash ?? DUMMY_HASH);
   const success = Boolean(user?.isActive && passwordOk);
+  const mfaRequired = Boolean(success && user?.totpEnabledAt);
   await prisma.$transaction([
     prisma.loginAttempt.create({ data: { emailHash, ipHash, success } }),
     prisma.auditLog.create({
       data: {
         userId: user?.id ?? null,
-        action: success ? "LOGIN_SUCCEEDED" : "LOGIN_FAILED",
+        action: success ? (mfaRequired ? "LOGIN_PASSWORD_VERIFIED" : "LOGIN_SUCCEEDED") : "LOGIN_FAILED",
         entityType: "User",
         entityId: user?.id,
         ipAddress: input.ip,
@@ -68,7 +79,7 @@ export async function attemptLogin(input: { email: string; password: string; ip:
     }),
   ]);
   if (!success || !user) return { ok: false, reason: "invalid" };
-  await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: now } });
+  if (!mfaRequired) await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: now } });
   return {
     ok: true,
     user: {
@@ -78,6 +89,7 @@ export async function attemptLogin(input: { email: string; password: string; ip:
       role: user.role,
       sessionVersion: user.sessionVersion,
       mustChangePassword: user.mustChangePassword,
+      mfaRequired,
     },
   };
 }

@@ -127,7 +127,8 @@ const FORBIDDEN: CampaignProgress = {
 /** Utilizador ativo lido da base de dados (nunca só o JWT). */
 async function activeUser() {
   const user = await getCurrentUser();
-  return user && !user.mustChangePassword ? user : null;
+  // Palavra-passe temporária ou 2FA obrigatório por configurar: só as páginas de conta.
+  return user && !user.mustChangePassword && !user.mfaSetupRequired ? user : null;
 }
 
 /** Autenticação e perfil verificados em cada chamada (a partir da base de dados). */

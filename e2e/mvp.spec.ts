@@ -1,17 +1,42 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Cookie, type Page } from "@playwright/test";
+import { base32Decode, totp } from "../src/features/auth/totp";
 import { E2E_METRICS_TOKEN } from "../playwright.config";
-import { E2E_ADMIN, E2E_VIEWER } from "./global-setup";
+import { E2E_ADMIN, E2E_ADMIN_TOTP_SECRET, E2E_VIEWER } from "./global-setup";
 
 // Fluxos do CLAUDE.md §33: login, contacto, template, envio dry-run, histórico,
 // campanha, confirmação e bloqueio de opt-out. Tudo com o provider fake.
 test.describe.configure({ mode: "serial" });
 
+/** Código TOTP de um passo ainda não usado (o servidor rejeita reutilizações). */
+let lastTotpStep = 0;
+async function freshTotp(secretBase32: string) {
+  while (Math.floor(Date.now() / 30_000) <= lastTotpStep) await new Promise((resolve) => setTimeout(resolve, 500));
+  lastTotpStep = Math.floor(Date.now() / 30_000);
+  return totp(base32Decode(secretBase32), new Date());
+}
+
+// Sessões reutilizadas entre testes: evita repetir o 2FA (e esperar por um novo passo TOTP).
+const sessions = new Map<string, Cookie[]>();
+
 async function login(page: Page, user: { email: string; password: string }) {
+  const cached = sessions.get(user.email);
+  if (cached) {
+    await page.context().addCookies(cached);
+    await page.goto("/dashboard");
+    if (new URL(page.url()).pathname === "/dashboard") return;
+    sessions.delete(user.email);
+  }
   await page.goto("/login");
   await page.fill("input[name=email]", user.email);
   await page.fill("input[name=password]", user.password);
   await page.click("button");
-  await page.waitForURL("**/dashboard");
+  await page.waitForURL(/\/(dashboard|login\/mfa)$/);
+  if (page.url().endsWith("/login/mfa")) {
+    await page.fill("input[name=code]", await freshTotp(E2E_ADMIN_TOTP_SECRET));
+    await page.getByRole("button", { name: "Verificar" }).click();
+    await page.waitForURL("**/dashboard");
+  }
+  sessions.set(user.email, await page.context().cookies());
 }
 
 async function createContact(page: Page, name: string, phone: string, consent: "OPTED_IN" | "UNKNOWN" | "OPTED_OUT") {
@@ -207,6 +232,74 @@ test("gestão de utilizadores: criar, palavra-passe temporária obrigatória, de
   await userPage.goto("/dashboard");
   await userPage.waitForURL("**/login?error=*");
   await expect(userPage.getByText("Sessão terminada")).toBeVisible();
+  await other.close();
+});
+
+test("2FA: novo administrador é obrigado a configurar; login com código de recuperação; reposição", async ({ page, browser }) => {
+  await login(page, E2E_ADMIN);
+  await page.goto("/users");
+  await page.fill("main input[name=name]", "Admin Novo");
+  await page.fill("main input[name=email]", "admin.novo@example.com");
+  await page.selectOption("main select[name=role]", "ADMIN");
+  await page.getByRole("button", { name: "Criar utilizador" }).click();
+  const temporary = (await page.getByTestId("temporary-password").textContent())?.trim() ?? "";
+
+  const other = await browser.newContext();
+  const admin2 = await other.newPage();
+  const password = "outra frase bem longa e segura";
+  await admin2.goto("/login");
+  await admin2.fill("input[name=email]", "admin.novo@example.com");
+  await admin2.fill("input[name=password]", temporary);
+  await admin2.click("button");
+  await admin2.waitForURL("**/account/password");
+  await admin2.fill("input[name=currentPassword]", temporary);
+  await admin2.fill("input[name=newPassword]", password);
+  await admin2.fill("input[name=confirmPassword]", password);
+  await admin2.getByRole("button", { name: "Alterar palavra-passe" }).click();
+  // Passo seguinte obrigatório: configurar o 2FA.
+  await admin2.waitForURL("**/account/mfa");
+
+  // Sem 2FA, um administrador só acede à página de configuração.
+  await admin2.goto("/campaigns");
+  await admin2.waitForURL("**/account/mfa");
+  await expect(admin2.getByText("Os administradores têm de usar 2FA")).toBeVisible();
+  await admin2.getByRole("button", { name: "Configurar 2FA" }).click();
+  const secret = ((await admin2.getByTestId("totp-secret").textContent()) ?? "").replace(/\s/g, "");
+  await admin2.fill("input[name=code]", "000000");
+  await admin2.getByRole("button", { name: "Ativar 2FA" }).click();
+  await expect(admin2.getByRole("alert").filter({ hasText: "Código incorreto" })).toBeVisible();
+  await admin2.fill("input[name=code]", totp(base32Decode(secret), new Date()));
+  await admin2.getByRole("button", { name: "Ativar 2FA" }).click();
+  const codes = admin2.getByTestId("recovery-codes").locator("li");
+  await expect(codes).toHaveCount(10);
+  const recovery = (await codes.first().textContent())?.trim() ?? "";
+  await expect(admin2.getByText("2FA ativo")).toBeVisible();
+  await admin2.goto("/dashboard");
+  await expect(admin2.getByRole("link", { name: "Utilizadores" })).toBeVisible();
+
+  // Novo login: palavra-passe + segundo fator (código de recuperação, uso único).
+  await other.clearCookies();
+  await admin2.goto("/login");
+  await admin2.fill("input[name=email]", "admin.novo@example.com");
+  await admin2.fill("input[name=password]", password);
+  await admin2.click("button");
+  await admin2.waitForURL("**/login/mfa");
+  await admin2.fill("input[name=code]", "123456");
+  await admin2.getByRole("button", { name: "Verificar" }).click();
+  await expect(admin2.getByRole("alert").filter({ hasText: "Código inválido" })).toBeVisible();
+  await admin2.fill("input[name=code]", recovery);
+  await admin2.getByRole("button", { name: "Verificar" }).click();
+  await admin2.waitForURL("**/account/mfa?notice=recovery");
+  await expect(admin2.getByText("Entraste com um código de recuperação")).toBeVisible();
+
+  // Reposição por outro administrador: termina a sessão; no próximo login volta a configurar.
+  await page.goto("/users");
+  await page.getByRole("link", { name: "Admin Novo" }).click();
+  await page.locator("main form").filter({ hasText: "Confirmo a identidade" }).locator("input[name=confirm]").check();
+  await page.getByRole("button", { name: "Repor 2FA" }).click();
+  await expect(page.locator("main [role=status]")).toContainText("2FA reposto");
+  await admin2.goto("/dashboard");
+  await admin2.waitForURL("**/login?error=*");
   await other.close();
 });
 

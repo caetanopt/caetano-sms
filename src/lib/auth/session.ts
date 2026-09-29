@@ -1,6 +1,7 @@
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { mfaRequiredFor } from "@/features/auth/mfa-policy";
 import { prisma } from "@/lib/db/prisma";
 
 const COOKIE_NAME = "sms_session";
@@ -13,6 +14,8 @@ export type SessionClaims = {
   role: "ADMIN" | "OPERATOR" | "VIEWER";
   /** Versão de sessão do utilizador no momento do login. */
   sessionVersion: number;
+  /** A sessão foi autenticada com segundo fator (TOTP ou código de recuperação). */
+  mfa?: boolean;
 };
 
 function secret() {
@@ -29,6 +32,7 @@ export async function createSession(claims: SessionClaims) {
     name: claims.name,
     role: claims.role,
     sv: claims.sessionVersion,
+    mfa: claims.mfa === true,
   })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(claims.userId)
@@ -65,6 +69,7 @@ export async function readSession(): Promise<SessionClaims | null> {
       name: String(payload.name),
       role: payload.role as SessionClaims["role"],
       sessionVersion: typeof payload.sv === "number" ? payload.sv : 0,
+      mfa: payload.mfa === true,
     };
   } catch {
     return null;
@@ -77,6 +82,10 @@ export type CurrentUser = {
   email: string;
   role: SessionClaims["role"];
   mustChangePassword: boolean;
+  /** 2FA ativo (a sessão foi obrigatoriamente autenticada com segundo fator). */
+  mfaEnabled: boolean;
+  /** O perfil exige 2FA e ainda não está configurado: só /account/mfa é permitido. */
+  mfaSetupRequired: boolean;
 };
 
 /**
@@ -89,22 +98,45 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
   if (!session) return null;
   const user = await prisma.user.findUnique({
     where: { id: session.userId },
-    select: { id: true, name: true, email: true, role: true, isActive: true, sessionVersion: true, mustChangePassword: true },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      role: true,
+      isActive: true,
+      sessionVersion: true,
+      mustChangePassword: true,
+      totpEnabledAt: true,
+    },
   });
   if (!user?.isActive || user.sessionVersion !== session.sessionVersion) return null;
-  return { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword };
+  const mfaEnabled = user.totpEnabledAt !== null;
+  // Com 2FA ativo, uma sessão sem segundo fator nunca é válida.
+  if (mfaEnabled && !session.mfa) return null;
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    mustChangePassword: user.mustChangePassword,
+    mfaEnabled,
+    mfaSetupRequired: !mfaEnabled && mfaRequiredFor(user.role),
+  };
 }
 
 /**
  * Exige sessão válida. Com palavra-passe temporária, só a página de alteração é permitida
  * (`allowPasswordChange`); tudo o resto redireciona para lá.
  */
-export async function requireUser(options: { allowPasswordChange?: boolean } = {}): Promise<CurrentUser> {
+export async function requireUser(
+  options: { allowPasswordChange?: boolean; allowMfaSetup?: boolean } = {},
+): Promise<CurrentUser> {
   const session = await readSession();
   if (!session) redirect("/login");
   const user = await getCurrentUser();
   // Não apagar o cookie aqui: em Server Components não é permitido. O login seguinte substitui-o.
   if (!user) redirect("/login?error=Sess%C3%A3o%20terminada%3A%20inicia%20sess%C3%A3o%20novamente");
   if (user.mustChangePassword && !options.allowPasswordChange) redirect("/account/password");
+  if (user.mfaSetupRequired && !options.allowMfaSetup && !user.mustChangePassword) redirect("/account/mfa");
   return user;
 }

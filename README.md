@@ -7,7 +7,7 @@ Starter para uma aplicação web de envio de SMS através do **AWS End User Mess
 - Next.js 16 + TypeScript strict
 - PostgreSQL + Prisma ORM 7
 - autenticação local com sessão HTTP-only
-- roles ADMIN / OPERATOR / VIEWER e gestão de utilizadores pela UI
+- roles ADMIN / OPERATOR / VIEWER, gestão de utilizadores pela UI e 2FA (TOTP) obrigatório para ADMIN
 - contactos com histórico de consentimento, opt-out e suppression list local
 - listas de contactos e importação CSV com validação
 - templates com variáveis de whitelist e pré-visualização
@@ -333,6 +333,34 @@ validada na base de dados em cada pedido; mudar perfil, desativar, repor ou alte
 termina de imediato as sessões abertas. Contas desativadas mantêm histórico e auditoria.
 Recuperação do administrador: `pnpm db:seed` com `ADMIN_EMAIL`/`ADMIN_PASSWORD` repõe a conta.
 
+### Verificação em dois passos (2FA)
+
+**Obrigatória para ADMIN** (opcional para os outros perfis), com TOTP (RFC 6238: 6 dígitos, 30 s)
+compatível com Google/Microsoft Authenticator, 1Password, Bitwarden, etc. Implementada com
+`node:crypto`, sem dependências.
+
+- **Configuração** em `/account/mfa`: chave para introdução manual (e ligação `otpauth://`), confirmada
+  com um código antes de ativar. Um administrador sem 2FA só acede a esta página (e à alteração de
+  palavra-passe), incluindo nas server actions. Ativar termina as outras sessões.
+- **Login**: palavra-passe → `/login/mfa` (cookie assinado de 5 min, ligado à versão de sessão) →
+  sessão com o claim `mfa`. Com 2FA ativo, uma sessão sem segundo fator nunca é válida.
+- **Códigos de recuperação**: 10, de uso único, mostrados uma vez; só o HMAC é guardado. Podem ser
+  regenerados com um código TOTP atual.
+- **Segurança**: segredo cifrado com AES-256-GCM (chave derivada por HKDF de `MFA_ENCRYPTION_KEY` ou
+  `AUTH_SECRET`); códigos não reutilizáveis (último passo guardado, com CAS); falhas contam para o
+  mesmo bloqueio do login (5 por email / 20 por IP em 15 min); auditoria `MFA_*`, `LOGIN_MFA_FAILED`,
+  `LOGIN_PASSWORD_VERIFIED`, `USER_MFA_RESET`.
+- **Telemóvel perdido**: outro administrador usa **Repor 2FA** em `/users/<id>` (termina as sessões;
+  configuração pedida no próximo login). Ninguém repõe o próprio 2FA. Sem outro administrador:
+  `ADMIN_RESET_MFA=true pnpm db:seed` (requer acesso ao servidor e à base de dados).
+- Promover um utilizador a ADMIN obriga-o a configurar o 2FA no próximo login.
+
+| Variável | Defeito | Significado |
+|---|---|---|
+| `MFA_REQUIRED_FOR_ADMINS` | `true` | `false` só em desenvolvimento/testes |
+| `MFA_ISSUER` | `SMS AWS` | nome na app de autenticação |
+| `MFA_ENCRYPTION_KEY` | — | chave de cifra (≥ 32); vazio = derivada de `AUTH_SECRET` |
+
 ### Retenção de dados
 
 `pnpm retention` mostra o que seria alterado; `pnpm retention --apply` aplica (auditado como
@@ -508,7 +536,7 @@ O `CLAUDE.md` contém o plano completo. A evolução recomendada é:
 2. primeiro envio real autorizado seguindo a checklist do §47;
 3. criar a fila SQS + DLQ (docs/AWS_SETUP.md §12) e ativar `SMS_JOB_QUEUE=sqs` quando o volume justificar;
 4. alarmes CloudWatch sobre as métricas EMF (DLQ, campanhas pausadas por erro, throttling);
-5. limites por utilizador/campanha se necessário.
+5. limites por utilizador/campanha e passkeys (WebAuthn) se necessário.
 
 ## Segurança
 

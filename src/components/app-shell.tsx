@@ -32,7 +32,8 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
             <div className="text-right">
               <div className="font-medium">{user.name}</div>
               <div className="text-xs text-slate-500">
-                {user.role} · <Link href="/account/password" className="hover:underline">Palavra-passe</Link>
+                {user.role} · <Link href="/account/password" className="hover:underline">Palavra-passe</Link> ·{" "}
+                <Link href="/account/mfa" className="hover:underline">2FA</Link>
               </div>
             </div>
             <form action={logoutAction}>

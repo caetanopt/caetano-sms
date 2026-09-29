@@ -1,12 +1,16 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
+import { clientIpFromHeaders } from "@/features/auth/login-throttle";
+import { redirect } from "next/navigation";
 import { z } from "zod";
 import { MAX_PASSWORD_LENGTH } from "@/features/auth/password-policy";
 import type { PasswordChangeFormState, UserSecretFormState } from "@/features/users/user-form-state";
 import { can } from "@/lib/auth/permissions";
 import { createSession, requireUser } from "@/lib/auth/session";
 import { redirectWith } from "@/lib/http/redirect-with";
+import { resetUserMfa } from "@/server/services/mfa";
 import { changeOwnPassword, createUser, resetUserPassword, updateUser } from "@/server/services/users";
 
 const role = z.enum(["ADMIN", "OPERATOR", "VIEWER"], { error: "Seleciona o perfil." });
@@ -70,6 +74,26 @@ export async function changePasswordAction(_previous: PasswordChangeFormState, f
   const result = await changeOwnPassword(user.id, parsed.data);
   if (!result.ok) return { error: result.message };
   // As outras sessões ficam inválidas; esta recebe um token com a nova versão.
-  await createSession({ userId: user.id, email: user.email, name: user.name, role: user.role, sessionVersion: result.value.sessionVersion });
+  await createSession({
+    userId: user.id,
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    sessionVersion: result.value.sessionVersion,
+    mfa: user.mfaEnabled,
+  });
+  // Administrador ainda sem 2FA: o passo seguinte obrigatório é configurá-lo.
+  if (user.mfaSetupRequired) redirect("/account/mfa");
   redirectWith("/account/password", { success: "Palavra-passe alterada. As outras sessões foram terminadas." });
 }
+
+export async function resetUserMfaAction(userId: string, formData: FormData) {
+  const admin = await requireAdmin();
+  const path = `/users/${encodeURIComponent(userId)}`;
+  if (formData.get("confirm") !== "on") redirectWith(path, { error: "Confirma a reposição do 2FA assinalando a caixa." });
+  const ip = clientIpFromHeaders(await headers(), process.env.TRUST_PROXY === "true");
+  const result = await resetUserMfa(admin, userId, { ip });
+  if (!result.ok) redirectWith(path, { error: result.message });
+  redirectWith(path, { success: "2FA reposto. O utilizador terá de o configurar de novo no próximo início de sessão." });
+}
+

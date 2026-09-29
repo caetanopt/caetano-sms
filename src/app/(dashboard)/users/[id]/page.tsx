@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { updateUserAction } from "@/app/actions/users";
+import { resetUserMfaAction, updateUserAction } from "@/app/actions/users";
 import { Feedback } from "@/components/feedback";
 import { ResetPasswordForm } from "@/components/users/reset-password-form";
 import { ROLE_LABELS } from "@/features/users/user-form-state";
@@ -25,7 +25,7 @@ export default async function UserDetailPage({
     where: { id },
     select: {
       id: true, name: true, email: true, role: true, isActive: true, mustChangePassword: true,
-      lastLoginAt: true, passwordChangedAt: true, createdAt: true,
+      lastLoginAt: true, passwordChangedAt: true, createdAt: true, totpEnabledAt: true, totpPendingSecretEnc: true,
     },
   });
   if (!user) notFound();
@@ -93,6 +93,27 @@ export default async function UserDetailPage({
           Para alterar a tua palavra-passe usa <Link href="/account/password" className="underline">Alterar palavra-passe</Link>.
         </p>
       )}
+
+      <section className="mt-6 rounded-xl border border-slate-200 bg-white p-5">
+        <h2 className="font-semibold">Verificação em dois passos (2FA)</h2>
+        <p className="mt-1 text-sm text-slate-600">
+          {user.totpEnabledAt
+            ? `Ativo desde ${dateTime(user.totpEnabledAt)}.`
+            : user.totpPendingSecretEnc
+              ? "Configuração iniciada, por confirmar."
+              : user.role === "ADMIN"
+                ? "Por configurar: será pedido no próximo início de sessão."
+                : "Não configurado (opcional para este perfil)."}
+        </p>
+        {!self && (user.totpEnabledAt || user.totpPendingSecretEnc) ? (
+          <form action={resetUserMfaAction.bind(null, user.id)} className="mt-3 flex flex-wrap items-center gap-4">
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" name="confirm" required /> Confirmo a identidade do utilizador (ex.: telemóvel perdido)
+            </label>
+            <button className="rounded-lg bg-red-700 px-4 py-2 text-sm font-semibold text-white">Repor 2FA</button>
+          </form>
+        ) : null}
+      </section>
 
       <section className="mt-6 rounded-xl border border-slate-200 bg-white p-5">
         <h2 className="font-semibold">Auditoria recente</h2>
