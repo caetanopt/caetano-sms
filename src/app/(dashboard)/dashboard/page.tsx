@@ -42,6 +42,15 @@ export default async function DashboardPage() {
     }),
   ]);
 
+  // Custo real (§43): o maior preço reportado por mensagem nos eventos AWS do mês.
+  const prices = await prisma.smsDeliveryEvent.groupBy({
+    by: ["smsMessageId"],
+    where: { smsMessageId: { not: null }, priceUsd: { not: null }, createdAt: { gte: monthStart } },
+    _max: { priceUsd: true },
+  });
+  const realCostUsd = prices.reduce((sum, row) => sum + Number(row._max.priceUsd ?? 0), 0);
+  const eventsConfigured = Boolean(process.env.AWS_SMS_EVENTS_SNS_TOPIC_ARN);
+
   let mode: "TEST" | "PRODUCTION" | null = null;
   let provider = "—";
   try {
@@ -56,7 +65,7 @@ export default async function DashboardPage() {
     ["SMS enviados hoje", sentToday, "Aceites ou posteriores; sem testes"],
     ["SMS enviados no mês", sentMonth, "Aceites ou posteriores; sem testes"],
     ["Aceites pela AWS (mês)", accepted, "Aceite ≠ entregue"],
-    ["Entregues (mês)", delivered, "Requer eventos de entrega"],
+    ["Entregues (mês)", delivered, eventsConfigured ? "Confirmado por eventos da AWS" : "Eventos de entrega não configurados"],
     ["Falhados (mês)", failed],
     ["Pendentes / incertos (mês)", pendingUnknown],
     ["Envios de teste (mês)", testMonth, "Dry-run / fake: nenhum SMS real"],
@@ -74,12 +83,20 @@ export default async function DashboardPage() {
         <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">Provider: {provider}</div>
       </div>
       {mode === "TEST" ? <TestModeBanner /> : null}
+      {!eventsConfigured ? (
+        <div className="mt-4 rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-700">
+          Eventos de entrega ainda não configurados: <strong>ACEITE PELA AWS</strong> não significa{" "}
+          <strong>ENTREGUE</strong>. Ver “Eventos de entrega” no README.
+        </div>
+      ) : null}
 
       <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {cards.map(([label, value, hint]) => (
+        {[...cards, ["Custo real (mês, USD)", realCostUsd, "Reportado nos eventos AWS; sem eventos = 0"] as [string, number, string]].map(([label, value, hint]) => (
           <div key={label} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="text-sm text-slate-500">{label}</div>
-            <div className="mt-2 text-3xl font-bold">{value}</div>
+            <div className="mt-2 text-3xl font-bold">
+              {label.startsWith("Custo") ? value.toLocaleString("pt-PT", { minimumFractionDigits: 2, maximumFractionDigits: 4 }) : value}
+            </div>
             {hint ? <div className="mt-1 text-xs text-slate-500">{hint}</div> : null}
           </div>
         ))}

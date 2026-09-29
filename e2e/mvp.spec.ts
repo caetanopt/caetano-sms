@@ -122,3 +122,10 @@ test("VIEWER vê campanhas sem controlos de envio", async ({ page }) => {
   await expect(page.getByRole("region", { name: "Progresso da campanha" })).toBeVisible();
   await expect(page.getByRole("button", { name: /Iniciar|Continuar|Retomar|Cancelar/ })).toHaveCount(0);
 });
+
+test("eventos de entrega: endpoint desativado sem tópico e aviso no dashboard", async ({ page, request }) => {
+  const response = await request.post("/api/webhooks/aws-sms-events", { data: "{}" });
+  expect(response.status()).toBe(404);
+  await login(page, E2E_ADMIN);
+  await expect(page.getByText("Eventos de entrega ainda não configurados")).toBeVisible();
+});

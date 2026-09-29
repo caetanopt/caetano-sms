@@ -153,19 +153,19 @@ model ContactListMember {
 }
 
 model SmsMessage {
-  id                   String           @id @default(cuid())
-  idempotencyKey       String           @unique
-  awsMessageId         String?          @unique
+  id                   String             @id @default(cuid())
+  idempotencyKey       String             @unique
+  awsMessageId         String?            @unique
   contactId            String?
-  contact              Contact?         @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  contact              Contact?           @relation(fields: [contactId], references: [id], onDelete: SetNull)
   destinationPhoneE164 String
   messageType          MessageType
   body                 String
   encodingEstimate     String?
   segmentCountEstimate Int?
-  status               SmsMessageStatus @default(PENDING)
+  status               SmsMessageStatus   @default(PENDING)
   provider             String
-  dryRun               Boolean          @default(false)
+  dryRun               Boolean            @default(false)
   errorCode            String?
   errorMessage         String?
   providerErrorName    String?
@@ -175,13 +175,17 @@ model SmsMessage {
   failedAt             DateTime?
   /// Template usado (o corpo final renderizado fica em `body`).
   templateId           String?
-  template             SmsTemplate?     @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  template             SmsTemplate?       @relation(fields: [templateId], references: [id], onDelete: SetNull)
   campaignId           String?
-  campaign             Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  campaign             Campaign?          @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  /// Último evento de entrega aplicado (Configuration Set → SNS).
+  lastEventType        String?
+  lastEventAt          DateTime?
+  deliveryEvents       SmsDeliveryEvent[]
   createdById          String
-  createdBy            User             @relation(fields: [createdById], references: [id])
-  createdAt            DateTime         @default(now())
-  updatedAt            DateTime         @updatedAt
+  createdBy            User               @relation(fields: [createdById], references: [id])
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
 
   @@index([createdAt])
   @@index([status])
@@ -296,4 +300,26 @@ model CampaignRecipient {
   @@unique([campaignId, contactId])
   @@index([campaignId, status, nextAttemptAt])
   @@index([status, claimedAt])
+}
+
+/// Eventos de entrega recebidos (idempotência por mensagem SNS). Sem número nem payload bruto.
+model SmsDeliveryEvent {
+  id            String      @id @default(cuid())
+  /// MessageId do envelope SNS: a mesma notificação entregue duas vezes é ignorada.
+  snsMessageId  String      @unique
+  awsMessageId  String
+  smsMessageId  String?
+  smsMessage    SmsMessage? @relation(fields: [smsMessageId], references: [id], onDelete: SetNull)
+  eventType     String
+  messageStatus String?
+  isFinal       Boolean     @default(false)
+  eventAt       DateTime?
+  /// Custo real reportado pela AWS (USD), quando disponível (CLAUDE.md §43).
+  priceUsd      Decimal?    @db.Decimal(12, 6)
+  /// false: evento registado mas sem efeito (mensagem desconhecida ou estado mais antigo).
+  applied       Boolean     @default(false)
+  createdAt     DateTime    @default(now())
+
+  @@index([awsMessageId])
+  @@index([createdAt])
 }

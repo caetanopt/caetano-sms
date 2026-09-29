@@ -252,7 +252,7 @@ export default async function CampaignDetailPage({
   if (campaign.status === "CANCELLED" && !campaign.finishedAt) {
     await reconcileCampaign(campaign.id, { now: () => new Date(), logger: { log: () => {} } });
   }
-  const [counts, messagesCount, problems] = await Promise.all([
+  const [counts, messagesCount, problems, deliveryGroups] = await Promise.all([
     recipientCounts(campaign.id),
     prisma.smsMessage.count({ where: { campaignId: campaign.id } }),
     prisma.campaignRecipient.findMany({
@@ -261,7 +261,9 @@ export default async function CampaignDetailPage({
       take: 200,
       include: { contact: { select: { id: true, name: true, phoneE164: true } } },
     }),
+    prisma.smsMessage.groupBy({ by: ["status"], where: { campaignId: campaign.id }, _count: { _all: true } }),
   ]);
+  const delivery = Object.fromEntries(deliveryGroups.map((row) => [row.status, row._count._all])) as Record<string, number>;
   let currentMode: string | null = null;
   try {
     currentMode = getSmsRuntimeConfig().mode;
@@ -311,6 +313,10 @@ export default async function CampaignDetailPage({
               ["Confirmada por", `${campaign.confirmedBy?.name ?? "—"}${campaign.confirmedAt ? ` em ${formatLisbon(campaign.confirmedAt)}` : ""}`],
               ["Início", campaign.startedAt ? formatLisbon(campaign.startedAt) : "—"],
               ["Fim", campaign.finishedAt ? formatLisbon(campaign.finishedAt) : "—"],
+              [
+                "Entrega (eventos AWS)",
+                `${delivery.DELIVERED ?? 0} entregues · ${(delivery.SENT ?? 0) + (delivery.QUEUED ?? 0)} em trânsito · ${(delivery.FAILED ?? 0) + (delivery.UNROUTABLE ?? 0) + (delivery.PROTECT_BLOCKED ?? 0)} falhadas · ${delivery.ACCEPTED ?? 0} só aceites`,
+              ],
             ]}
           />
         </div>

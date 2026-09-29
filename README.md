@@ -13,6 +13,7 @@ Starter para uma aplicação web de envio de SMS através do **AWS End User Mess
 - templates com variáveis de whitelist e pré-visualização
 - campanhas com revisão §29, confirmação explícita e envio por lotes idempotente
 - testes E2E com Playwright
+- eventos de entrega via SNS com validação de assinatura e estados idempotentes
 - envio individual
 - `FakeSmsProvider` para desenvolvimento seguro
 - `AwsSmsProvider` com AWS SDK v3
@@ -160,6 +161,33 @@ Privacidade: o texto final por destinatário é apagado quando o destinatário t
 é eliminado (o texto enviado fica em `SmsMessage`). **Retenção por definir com o DPO** (proposta: anonimizar
 corpo e número de `SmsMessage` após 12 meses) — a implementar na Fase 7.
 
+## Eventos de entrega
+
+`POST /api/webhooks/aws-sms-events` recebe os eventos do Configuration Set via SNS
+(configuração na AWS em `docs/AWS_SETUP.md` → "Eventos de entrega"; **não** é criada automaticamente).
+
+- valida a assinatura SNS, o certificado (`sns.<região>.amazonaws.com`), o tópico
+  (`AWS_SMS_EVENTS_SNS_TOPIC_ARN`) e a idade da mensagem (replay); desativado sem tópico configurado;
+- idempotente (MessageId SNS único) e tolerante à ordem: o estado nunca recua e estados finais
+  (`DELIVERED`, `FAILED`, `UNROUTABLE`, `PROTECT_BLOCKED`) nunca são substituídos;
+- mensagens em estado incerto (`UNKNOWN`, sem `awsMessageId`) são associadas pelo
+  `Context.internalMessageId` enviado com cada SMS — um evento prova que saíram;
+- opt-out reportado pela AWS atualiza a suppression list local;
+- guarda o custo real por mensagem quando a AWS o reporta (dashboard: "Custo real");
+- não guarda o número nem o payload bruto dos eventos.
+
+| Evento | Estado |
+|---|---|
+| `TEXT_PENDING`, `TEXT_QUEUED` | Em fila |
+| `TEXT_SENT`, `TEXT_SUCCESSFUL` | Enviado ao operador |
+| `TEXT_DELIVERED` | Entregue |
+| `TEXT_BLOCKED`, `TEXT_CARRIER_BLOCKED`, `TEXT_SPAM`, `TEXT_INVALID_MESSAGE`, `TEXT_TTL_EXPIRED` | Falhou |
+| `TEXT_INVALID`, `TEXT_UNREACHABLE`, `TEXT_CARRIER_UNREACHABLE` | Sem rota |
+| `TEXT_PROTECT_BLOCKED` | Bloqueado (Protect) |
+| `TEXT_UNKNOWN` | Resultado incerto (não rebaixa "em fila/enviado") |
+
+Sem eventos configurados, o dashboard avisa que "aceite" não significa "entregue".
+
 ## Validação
 
 ```bash
@@ -292,7 +320,7 @@ CLAUDE.md
 
 O `CLAUDE.md` contém o plano completo. A evolução recomendada é:
 
-1. delivery events: Configuration Set + SNS/SQS (Fase 6);
+1. criar na AWS o Configuration Set + SNS (comandos em docs/AWS_SETUP.md, requer aprovação);
 2. `SqsSmsJobQueue` + worker para campanhas sem depender da página aberta;
 3. gestão de utilizadores pela UI;
 4. rate limiting por identidade/país, headers de segurança, retenção;
