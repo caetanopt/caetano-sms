@@ -225,7 +225,7 @@ export function CampaignRunner({
             </button>
           )}
           {!running ? (
-            <span className="text-xs text-slate-500">O envio só avança com esta página aberta e depois de iniciado.</span>
+            <span className="text-xs text-slate-500">Depois de iniciado, o envio avança com esta página aberta ou com o worker (pnpm worker:campaigns).</span>
           ) : null}
         </div>
       ) : null}

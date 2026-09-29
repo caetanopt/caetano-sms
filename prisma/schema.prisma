@@ -181,6 +181,8 @@ model SmsMessage {
   /// Último evento de entrega aplicado (Configuration Set → SNS).
   lastEventType        String?
   lastEventAt          DateTime?
+  /// Retenção (CLAUDE.md §13): texto e número anonimizados nesta data.
+  anonymizedAt         DateTime?
   deliveryEvents       SmsDeliveryEvent[]
   createdById          String
   createdBy            User               @relation(fields: [createdById], references: [id])
@@ -201,10 +203,24 @@ model AuditLog {
   entityType   String
   entityId     String?
   metadataJson Json?
+  ipAddress    String?
   createdAt    DateTime @default(now())
 
   @@index([createdAt])
   @@index([userId])
+}
+
+/// Tentativas de login (proteção contra força bruta). Email e IP só como HMAC.
+model LoginAttempt {
+  id        String   @id @default(cuid())
+  emailHash String
+  ipHash    String?
+  success   Boolean
+  createdAt DateTime @default(now())
+
+  @@index([emailHash, createdAt])
+  @@index([ipHash, createdAt])
+  @@index([createdAt])
 }
 
 /// Template de SMS com variáveis de uma whitelist explícita (ver src/lib/sms/templates.ts).

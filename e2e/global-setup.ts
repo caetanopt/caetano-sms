@@ -13,7 +13,7 @@ export default async function globalSetup() {
   process.env.DATABASE_URL = url;
   const { prisma } = await import("../src/lib/db/prisma");
   await prisma.$executeRawUnsafe(
-    'TRUNCATE "CampaignRecipient", "Campaign", "ContactListMember", "ContactList", "ConsentEvent", "SuppressionEntry", "SmsDeliveryEvent", "SmsMessage", "SmsTemplate", "AuditLog", "Contact", "User" CASCADE',
+    'TRUNCATE "CampaignRecipient", "Campaign", "ContactListMember", "ContactList", "ConsentEvent", "SuppressionEntry", "SmsDeliveryEvent", "SmsMessage", "SmsTemplate", "AuditLog", "LoginAttempt", "Contact", "User" CASCADE',
   );
   for (const [user, role, name] of [
     [E2E_ADMIN, "ADMIN", "Admin E2E"],

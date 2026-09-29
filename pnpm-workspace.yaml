@@ -3,3 +3,8 @@ allowBuilds:
   esbuild: true
   prisma: true
   unrs-resolver: true
+
+# Correções de segurança em dependências transitivas da CLI do Prisma (pnpm audit).
+overrides:
+  deepmerge-ts: ">=8.0.0"
+  mysql2: ">=3.23.1"

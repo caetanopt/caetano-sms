@@ -268,6 +268,61 @@ Quando a AWS indica que o destino está em opt-out, o contacto local é marcado 
 Os logs são JSON estruturado (`sms.send.accepted`, `sms.send.failed`, `sms.send.uncertain`, …)
 com telefone mascarado e sem o texto da mensagem.
 
+## Segurança operacional (Fase 7)
+
+- **Headers**: CSP (`frame-ancestors 'none'`, sem recursos externos), `X-Frame-Options: DENY`,
+  `nosniff`, `Referrer-Policy`, `Permissions-Policy`, HSTS em produção (`src/lib/http/security-headers.ts`).
+- **Login**: bloqueio após 5 falhas por email ou 20 por IP em 15 min; tempo constante para contas
+  inexistentes; mensagens que não revelam se a conta existe; auditoria `LOGIN_*` com IP. Email e IP
+  guardados só como HMAC. O IP só é lido de `X-Forwarded-For` com `TRUST_PROXY=true` (atrás de proxy
+  de confiança).
+- **Server Actions**: proteção CSRF nativa do Next (verificação de origem). Atrás de um proxy que
+  altere o host, configurar `experimental.serverActions.allowedOrigins`.
+- **Dependências**: `pnpm audit` sem vulnerabilidades conhecidas (overrides em `pnpm-workspace.yaml`
+  para dependências transitivas da CLI do Prisma).
+
+### Retenção de dados
+
+`pnpm retention` mostra o que seria alterado; `pnpm retention --apply` aplica (auditado como
+`RETENTION_APPLIED`). Agendar diariamente em produção **depois de validar os prazos com o DPO**:
+
+| Variável | Defeito | Efeito |
+|---|---|---|
+| `SMS_RETENTION_DAYS` | 365 (mín. 30) | texto removido e número mascarado nas mensagens terminadas |
+| `DELIVERY_EVENT_RETENTION_DAYS` | 365 | eventos de entrega apagados |
+| `LOGIN_ATTEMPT_RETENTION_DAYS` | 30 | tentativas de login apagadas |
+| `AUDIT_IP_RETENTION_DAYS` | 90 | IP removido dos registos de auditoria (o registo mantém-se) |
+
+### Worker de campanhas
+
+`pnpm worker:campaigns` processa em segundo plano as campanhas **já iniciadas** por um operador
+(nunca inicia uma campanha confirmada mas não iniciada, nem retoma uma pausada). Pode correr em
+paralelo com a página e com outras instâncias: o lease e as chaves de idempotência impedem
+duplicados. Termina de forma graciosa em `SIGTERM`.
+
+## Deployment
+
+Requisitos: Node 22.12+, PostgreSQL 16, HTTPS, gestor de segredos da plataforma, IAM Role (sem access keys).
+
+```bash
+pnpm install --frozen-lockfile
+pnpm build                        # não precisa de DATABASE_URL
+pnpm prisma migrate deploy        # antes de cada release (nunca migrate dev em produção)
+pnpm start                        # web
+pnpm worker:campaigns             # processo separado (1+ instâncias)
+pnpm retention --apply            # cron diário, depois de validados os prazos
+```
+
+- Variáveis obrigatórias: `DATABASE_URL`, `AUTH_SECRET` (≥32 caracteres, segredo), `NODE_ENV=production`,
+  `SMS_PROVIDER`, `AWS_SMS_DRY_RUN` (explícito), `AWS_REGION`, `AWS_SMS_ORIGINATION_IDENTITY`,
+  `AWS_SMS_CONFIGURATION_SET`, `AWS_SMS_PROTECT_CONFIGURATION_ID`; opcionais as de eventos e limites.
+- Health checks: `GET /api/health` (liveness, sem dependências) e `GET /api/health/ready`
+  (verifica a base de dados; 503 se indisponível). Nenhum envia SMS.
+- Backups diários do PostgreSQL com retenção alinhada com a política acima; testar restauros.
+- Logs JSON no stdout (sem números completos nem texto das mensagens) → CloudWatch/agregador.
+- Na AWS (quando aplicável): App Runner/ECS + RDS PostgreSQL + Secrets Manager; o worker como
+  serviço separado. Não criar infraestrutura antes de haver necessidade real (§45).
+
 ## Ativar AWS
 
 Ler `docs/AWS_SETUP.md` antes de alterar a configuração.
@@ -321,10 +376,9 @@ CLAUDE.md
 O `CLAUDE.md` contém o plano completo. A evolução recomendada é:
 
 1. criar na AWS o Configuration Set + SNS (comandos em docs/AWS_SETUP.md, requer aprovação);
-2. `SqsSmsJobQueue` + worker para campanhas sem depender da página aberta;
+2. primeiro envio real autorizado seguindo a checklist do §47;
 3. gestão de utilizadores pela UI;
-4. rate limiting por identidade/país, headers de segurança, retenção;
-5. hardening e deployment.
+4. rate limiting por identidade/país (MPS), `SqsSmsJobQueue` quando o volume justificar.
 
 ## Segurança
 

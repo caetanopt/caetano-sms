@@ -1,14 +1,16 @@
 "use server";
 
-import bcrypt from "bcryptjs";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
+import { clientIpFromHeaders } from "@/features/auth/login-throttle";
 import { createSession, destroySession } from "@/lib/auth/session";
-import { prisma } from "@/lib/db/prisma";
+import { redirectWith } from "@/lib/http/redirect-with";
+import { attemptLogin } from "@/server/services/login";
 
 const loginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(1),
+  email: z.email().max(200),
+  password: z.string().min(1).max(200),
 });
 
 export async function loginAction(formData: FormData) {
@@ -16,24 +18,26 @@ export async function loginAction(formData: FormData) {
     email: formData.get("email"),
     password: formData.get("password"),
   });
+  if (!parsed.success) redirectWith("/login", { error: "Dados inválidos" });
 
-  if (!parsed.success) redirect("/login?error=Dados%20inv%C3%A1lidos");
-
-  const user = await prisma.user.findUnique({
-    where: { email: parsed.data.email.toLowerCase() },
-  });
-
-  if (!user?.isActive || !(await bcrypt.compare(parsed.data.password, user.passwordHash))) {
-    redirect("/login?error=Credenciais%20inv%C3%A1lidas");
+  const ip = clientIpFromHeaders(await headers(), process.env.TRUST_PROXY === "true");
+  const result = await attemptLogin({ ...parsed.data, ip });
+  if (!result.ok) {
+    // A mensagem nunca revela se a conta existe.
+    redirectWith("/login", {
+      error:
+        result.reason === "blocked"
+          ? `Demasiadas tentativas falhadas. Tenta novamente dentro de ${Math.ceil((result.retryAfterMs ?? 60_000) / 60_000)} min.`
+          : "Credenciais inválidas",
+    });
   }
 
   await createSession({
-    userId: user.id,
-    email: user.email,
-    name: user.name,
-    role: user.role,
+    userId: result.user.id,
+    email: result.user.email,
+    name: result.user.name,
+    role: result.user.role,
   });
-
   redirect("/dashboard");
 }
 

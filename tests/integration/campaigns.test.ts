@@ -635,3 +635,47 @@ describe("review regressions", () => {
     });
   });
 });
+
+describe("campaign worker", () => {
+  it("only advances campaigns an operator already started and never starts READY ones", async () => {
+    const { runWorkerOnce } = await import("@/server/services/campaigns/worker");
+    const started = await setup({ optedIn: 2 });
+    await confirm(started.campaignId);
+    const notStarted = await (async () => {
+      const list = await createList(actors.operator, { name: "Outra" });
+      if (!list.ok) throw new Error("list");
+      const c = await createContact(actors.operator, { name: "Zé Lopes", phone: "919999999", consentStatus: "OPTED_IN", consent: optIn });
+      if (!c.ok) throw new Error("contact");
+      await addContactToList(actors.operator, list.value.id, c.value.id);
+      const draft = await createCampaignDraft(actors.operator, {
+        name: "Parada", listId: list.value.id, templateId: null, messageBody: "Olá", messageType: "TRANSACTIONAL", variables: {},
+      });
+      if (!draft.ok) throw new Error("draft");
+      await confirm(draft.value.id);
+      return draft.value.id;
+    })();
+    // O operador iniciou a primeira (1 passo com lote de 1) e depois fechou a página.
+    const provider = new RecordingProvider();
+    const { deps } = engine(provider, {
+      limits: { maxRecipients: 500, maxSendsPerMinute: 1000, batchSize: 1, bulkConfirmationThreshold: 50, maxAttempts: 3 },
+    });
+    await processCampaignStep(started.campaignId, deps);
+
+    for (let i = 0; i < 5; i += 1) await runWorkerOnce(deps);
+    expect(await prisma.campaign.findUniqueOrThrow({ where: { id: started.campaignId } })).toMatchObject({ status: "COMPLETED" });
+    expect(await prisma.campaign.findUniqueOrThrow({ where: { id: notStarted } })).toMatchObject({ status: "READY" });
+    expect(provider.calls).toHaveLength(2);
+  });
+
+  it("skips paused campaigns", async () => {
+    const { runWorkerOnce } = await import("@/server/services/campaigns/worker");
+    const { campaignId } = await setup({ optedIn: 2 });
+    await confirm(campaignId);
+    await prisma.campaign.update({ where: { id: campaignId }, data: { status: "SENDING", startedAt: new Date() } });
+    await pauseCampaign(actors.operator, campaignId);
+    const provider = new RecordingProvider();
+    const { deps } = engine(provider);
+    await runWorkerOnce(deps);
+    expect(provider.calls).toHaveLength(0);
+  });
+});

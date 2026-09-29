@@ -11,6 +11,8 @@
     "dev": "next dev",
     "build": "prisma generate && next build",
     "start": "next start",
+    "worker:campaigns": "tsx scripts/campaign-worker.ts",
+    "retention": "tsx scripts/retention.ts",
     "lint": "eslint .",
     "typecheck": "prisma generate && tsc --noEmit",
     "test": "vitest run",
@@ -51,6 +53,6 @@
     "tailwindcss": "^4.1.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
-    "vitest": "^3.2.0"
+    "vitest": "^4.1.11"
   }
 }

@@ -129,3 +129,27 @@ test("eventos de entrega: endpoint desativado sem tópico e aviso no dashboard",
   await login(page, E2E_ADMIN);
   await expect(page.getByText("Eventos de entrega ainda não configurados")).toBeVisible();
 });
+
+test("headers de segurança e prontidão", async ({ request }) => {
+  const response = await request.get("/login");
+  expect(response.headers()["x-frame-options"]).toBe("DENY");
+  expect(response.headers()["content-security-policy"]).toContain("frame-ancestors 'none'");
+  expect(response.headers()["x-powered-by"]).toBeUndefined();
+  const ready = await request.get("/api/health/ready");
+  expect(await ready.json()).toEqual({ status: "ok" });
+});
+
+test("login bloqueado após tentativas falhadas, sem revelar a conta", async ({ page }) => {
+  for (let i = 0; i < 5; i += 1) {
+    await page.goto("/login");
+    await page.fill("input[name=email]", E2E_VIEWER.email);
+    await page.fill("input[name=password]", "errada-errada");
+    await page.click("button");
+    await expect(page.locator("main")).toContainText("Credenciais inválidas");
+  }
+  await page.goto("/login");
+  await page.fill("input[name=email]", E2E_VIEWER.email);
+  await page.fill("input[name=password]", E2E_VIEWER.password);
+  await page.click("button");
+  await expect(page.locator("main")).toContainText("Demasiadas tentativas");
+});
