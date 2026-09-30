@@ -153,6 +153,9 @@ test("ritmo por campanha: acima do global é rejeitado; abaixo aparece na revis�
   await page.locator("main textarea").fill("Ola, ritmo controlado.");
   const pace = page.locator("main label", { hasText: "Ritmo máximo" }).locator("input");
   await pace.fill("999");
+  // 1.ª barreira: o browser (max = limite global); 2.ª: o servidor, mesmo sem o atributo.
+  expect(await pace.evaluate((el: HTMLInputElement) => el.validity.rangeOverflow)).toBe(true);
+  await pace.evaluate((el: HTMLInputElement) => el.removeAttribute("max"));
   await page.getByRole("button", { name: "Criar rascunho" }).click();
   await expect(page.locator("main [role=alert]")).toContainText("não pode exceder o limite global (60 mensagens por minuto)");
   await pace.fill("30");

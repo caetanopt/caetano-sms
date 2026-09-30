@@ -146,6 +146,7 @@ export function CampaignEditor({
           type="number"
           inputMode="numeric"
           min={1}
+          max={globalMaxPerMinute}
           step={1}
           value={maxPerMinute}
           onChange={(event) => setMaxPerMinute(event.target.value)}
@@ -153,8 +154,8 @@ export function CampaignEditor({
           className={inputClass}
         />
         <span className="mt-1 block text-xs font-normal text-slate-500">
-          Deixa vazio para usar o limite global ({globalMaxPerMinute} mensagens por minuto). Só é possível definir um valor
-          inferior; um ritmo mais baixo espalha o envio no tempo.
+          Deixa vazio para usar o limite global ({globalMaxPerMinute} mensagens por minuto). O valor tem de ser igual ou
+          inferior a esse limite; um ritmo mais baixo espalha o envio no tempo.
         </span>
       </label>
 

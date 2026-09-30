@@ -140,7 +140,13 @@ export async function sendSmsFormAction(
         mode: preview.mode,
         originationLabel: preview.originationLabel,
         legalBasisConfirmed: preview.legalBasisConfirmed,
-        quota: { used: quota.used, limit: quota.limit, remaining: quota.remaining, afterSend: quota.remaining - preview.segments.segments },
+        quota: {
+          used: quota.used,
+          limit: quota.limit,
+          remaining: quota.remaining,
+          afterSend: quota.remaining - preview.segments.segments,
+          committed: quota.committedElsewhere.parts,
+        },
       },
     };
   }

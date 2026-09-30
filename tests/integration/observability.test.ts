@@ -214,12 +214,13 @@ describe("quota metrics", () => {
       data: { action: "CAMPAIGN_HALTED", entityType: "Campaign", entityId: "old", metadataJson: { reason: "USER_QUOTA_EXHAUSTED" }, createdAt: minutesAgo(25 * 60) },
     });
     const metrics = await collectOperationalMetrics(deps());
-    expect(metrics.quota).toEqual({ usersExhaustedToday: 2, campaignsHaltedByQuota24h: 2 }); // other (1/1) + zero (0/0)
+    // Só `other` (1 de 1); `zero` tem limite 0 por decisão de um administrador, não esgotou.
+    expect(metrics.quota).toEqual({ usersExhaustedToday: 1, campaignsHaltedByQuota24h: 2 });
     expect(zero.id).toBeTruthy();
 
     process.env.METRICS_TOKEN = "m".repeat(40);
     const body = await (await GET(new Request("http://localhost/api/metrics", { headers: { authorization: `Bearer ${"m".repeat(40)}` } }))).text();
-    expect(body).toContain("sms_quota_users_exhausted_today 2");
+    expect(body).toContain("sms_quota_users_exhausted_today 1");
     expect(body).toContain("sms_campaigns_halted_by_quota_24h 2");
     expect(body).not.toContain("op@test.local");
   });

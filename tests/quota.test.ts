@@ -71,3 +71,26 @@ describe("quota messages (PT-PT, actionable)", () => {
     expect(confirmationQuotaBlocker({ required: 1, state, committed: { parts: 500, names: ["X"] } })).toMatch(/tem 0 disponíveis/);
   });
 });
+
+describe("quota messages with a zero limit and many campaigns", () => {
+  it("never promises a midnight reset for a zero limit", () => {
+    const zero = quotaState({ limit: 0, used: 0, now });
+    for (const text of [
+      describeQuota(zero),
+      userQuotaHaltMessage(zero),
+      resumeBlockedByQuotaMessage(zero),
+      confirmationQuotaBlocker({ required: 1, state: zero, committed: { parts: 0, names: [] } }),
+    ]) {
+      expect(text).toMatch(/não tem quota de envio|Sem quota de envio/);
+      expect(text).not.toMatch(/00:00/);
+    }
+  });
+
+  it("says how many campaigns were left out of the list", () => {
+    const state = quotaState({ limit: 100, used: 0, now });
+    expect(confirmationQuotaBlocker({ required: 50, state, committed: { parts: 80, names: ["A", "B", "C"], total: 5 } })).toMatch(
+      /«A», «B», «C» e mais 2 campanha\(s\)/,
+    );
+  });
+});
+

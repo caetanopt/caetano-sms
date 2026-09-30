@@ -262,7 +262,7 @@ export function alertsFor(metrics: OperationalMetrics, options: { deliveryEvents
   if (metrics.quota.campaignsHaltedByQuota24h > 0) {
     alerts.push({
       level: "warning",
-      message: `${metrics.quota.campaignsHaltedByQuota24h} campanha(s) pausada(s) por quota ou conta desativada nas últimas 24 h (retoma manual ou ajuste da quota).`,
+      message: `${metrics.quota.campaignsHaltedByQuota24h} campanha(s) pausada(s) por quota ou conta de quem confirmou desativada nas últimas 24 h (ajustar a quota e retomar; se a conta foi desativada, cancelar e criar uma nova).`,
     });
   }
   if (metrics.queue.kind === "sqs") {

@@ -40,7 +40,7 @@ const draftSchema = z.object({
   messageBody: z.string().max(1530, "Mensagem demasiado longa."),
   messageType: z.enum(["TRANSACTIONAL", "PROMOTIONAL"], { error: "Seleciona o tipo de mensagem." }),
   maxSendsPerMinute: z.union([z.literal(""), z.coerce.number().int().min(1).max(10_000)], {
-    error: "Ritmo máximo: inteiro entre 1 e 10000 mensagens por minuto, ou vazio para usar o limite global.",
+    error: "Ritmo máximo: número inteiro de mensagens por minuto (igual ou inferior ao limite global), ou vazio para usar o limite global.",
   }),
 });
 

@@ -24,6 +24,7 @@ import { prismaManualSendStore } from "@/server/repositories/prisma-manual-send-
 import { createCampaignDraft, updateCampaignDraft } from "@/server/services/campaign-drafts";
 import { getUserQuotaSnapshot, reserveSendCapacity } from "@/server/services/send-rate";
 import { updateUser } from "@/server/services/users";
+import { lisbonDayWindow } from "@/lib/time/lisbon";
 import { createActors, resetDatabase } from "./helpers";
 
 let actors: Record<"admin" | "operator" | "viewer", Actor>;
@@ -915,6 +916,13 @@ describe("SQS job queue + worker", () => {
 // ---------------------------------------------------------------------------
 
 describe("per-user daily quota and per-campaign pace", () => {
+  // O motor grava createdAt com a hora da base de dados: evitar correr a atravessar a meia-noite de Lisboa.
+  beforeEach(async () => {
+    const { end } = lisbonDayWindow(new Date());
+    const msToMidnight = end.getTime() - Date.now();
+    if (msToMidnight < 30_000) await new Promise((resolve) => setTimeout(resolve, msToMidnight + 1_000));
+  });
+
   const draftInput = (listId: string, maxSendsPerMinute: number | null) => ({
     name: "Outubro",
     listId,
@@ -1095,5 +1103,47 @@ describe("per-user daily quota and per-campaign pace", () => {
     await runUntilSettled(campaignId, deps, advance);
     expect(await getUserQuotaSnapshot(actors.operator.id, 1000)).toMatchObject({ used: 2 });
     expect(await getUserQuotaSnapshot(actors.admin.id, 1000)).toMatchObject({ used: 0 });
+  });
+
+  it("demoting the confirmer to VIEWER pauses their campaigns immediately (audited with the admin)", async () => {
+    const { campaignId } = await setup({ optedIn: 2 });
+    await confirm(campaignId);
+    expect(await updateUser(actors.admin, actors.operator.id, { name: "OPERATOR", role: "VIEWER", isActive: true })).toMatchObject({ ok: true });
+    const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    expect(campaign).toMatchObject({ pausedById: actors.admin.id, lastError: expect.stringMatching(/deixou de poder enviar/) });
+    expect(await prisma.auditLog.findFirst({ where: { action: "CAMPAIGN_HALTED", entityId: campaignId } })).toMatchObject({
+      userId: actors.admin.id,
+      metadataJson: { reason: "CONFIRMER_INACTIVE", confirmerId: actors.operator.id },
+    });
+    expect(await resumeCampaign(actors.admin, campaignId)).toMatchObject({ ok: false, message: expect.stringMatching(/deixou de poder enviar/) });
+  });
+
+  it("a job whose reservation expired (late SQS delivery) is requeued instead of sent", async () => {
+    const { campaignId } = await setup({ optedIn: 1 });
+    await confirm(campaignId);
+    const provider = new RecordingProvider();
+    const { deps, advance } = engine(provider, { queue: { enqueue: async () => {}, maxInFlight: 5 } });
+    await processCampaignStep(campaignId, deps); // reserva, mas o "SQS" não entrega
+    const [reserved] = await prisma.campaignRecipient.findMany({ where: { campaignId } });
+    expect(reserved.status).toBe("PROCESSING");
+    advance(STALE_MS + 1_000);
+    const { sendCampaignRecipient } = await import("@/server/services/campaigns/engine");
+    await sendCampaignRecipient({ campaignId, recipientId: reserved.id, claimToken: reserved.claimToken! }, deps);
+    expect(provider.calls).toHaveLength(0);
+    expect(await prisma.campaignRecipient.findUniqueOrThrow({ where: { id: reserved.id } })).toMatchObject({ status: "PENDING", attempt: 1, claimToken: null });
+  });
+
+  it("resume is refused while the next pending recipient does not fit the remaining quota", async () => {
+    const { campaignId } = await setup({ optedIn: 2 });
+    await setQuota(actors.operator.id, 2);
+    await confirm(campaignId);
+    // Próximo destinatário passa a precisar de 2 partes; resta 1 depois de um envio individual.
+    await prisma.campaignRecipient.updateMany({ where: { campaignId }, data: { segments: 2 } });
+    expect(await manualSend(actors.operator.id)).toMatchObject({ kind: "created" });
+    expect(await pauseCampaign(actors.operator, campaignId)).toMatchObject({ ok: true });
+    expect(await resumeCampaign(actors.admin, campaignId)).toMatchObject({
+      ok: false,
+      message: expect.stringMatching(/não chega para o próximo envio \(1 de 2/),
+    });
   });
 });

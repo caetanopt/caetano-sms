@@ -64,7 +64,7 @@ export default async function UserDetailPage({
 
       <section className="mt-6 rounded-xl border border-slate-200 bg-white p-5">
         <h2 className="font-semibold">Dados e perfil</h2>
-        {self ? <p className="mt-1 text-sm text-slate-500">Não podes alterar o teu próprio perfil nem desativar a tua conta.</p> : null}
+        {self ? <p className="mt-1 text-sm text-slate-500">Não podes alterar o teu próprio perfil, a tua quota diária nem desativar a tua conta (pede a outro administrador).</p> : null}
         <form action={updateUserAction.bind(null, user.id)} className="mt-4 grid gap-4 md:grid-cols-3 md:items-end">
           <label className="block text-sm font-medium">
             Nome

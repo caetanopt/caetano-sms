@@ -134,7 +134,9 @@ describe("daily quota (prismaManualSendStore.createPendingMessage)", () => {
       },
     });
   }
-  const now = () => new Date();
+  // Instante fixo a meio de um dia de Lisboa: os testes não dependem da hora real (meia-noite).
+  const NOON = new Date("2026-09-29T11:00:00Z");
+  const now = () => NOON;
 
   it("blocks when the day's parts would exceed the override and never touches MPS buckets", async () => {
     await prisma.user.update({ where: { id: actors.operator.id }, data: { dailyPartsLimit: 3 } });
@@ -147,7 +149,7 @@ describe("daily quota (prismaManualSendStore.createPendingMessage)", () => {
       check: { limit: "user_quota", cost: 1, quota: { used: 3, limit: 3, remaining: 0 } },
     });
     if (second.kind === "rate_limited" && second.check.limit === "user_quota") {
-      expect(second.check.quota.resetsAt.getTime()).toBeGreaterThan(Date.now());
+      expect(second.check.quota.resetsAt.toISOString()).toBe("2026-09-29T23:00:00.000Z");
     }
     expect(await prisma.smsMessage.count({ where: { createdById: actors.operator.id } })).toBe(2);
     // O bloqueio pela quota acontece antes dos baldes: só a 1.ª reserva os criou/consumiu.
@@ -296,6 +298,23 @@ describe("per-campaign pace (claimNextRecipient)", () => {
     const fast = await campaignWithRecipients(5, 2);
     // Global 1 mensagem/min e já há 1 reserva recente (a de `slow` há instantes): o global ganha ao ritmo próprio (5).
     expect(await claim(fast, 1, new Date(at.getTime() + 61_000))).toMatchObject({ kind: "rate_limited", limit: "per_minute" });
+  });
+
+  it("does not wait for the campaign pace when nothing is pending", async () => {
+    const slow = await campaignWithRecipients(1, 1);
+    const at = new Date();
+    expect((await claim(slow, 1000, at)).kind).toBe("claimed");
+    expect(await claim(slow, 1000, at)).toEqual({ kind: "none" });
+  });
+
+  it("a confirmer demoted to VIEWER can no longer pay for sends", async () => {
+    const campaign = await campaignWithRecipients(null, 1);
+    await prisma.user.update({ where: { id: actors.operator.id }, data: { role: "VIEWER" } });
+    expect(await claim(campaign, 1000, new Date())).toMatchObject({ kind: "blocked", code: "CONFIRMER_INACTIVE" });
+    expect(await reserveSendCapacity({ phoneE164: PT, segments: 1 }, actors.operator.id, limits(), new Date())).toMatchObject({
+      ok: false,
+      limit: "user_blocked",
+    });
   });
 
   it("pauses (blocked) when the confirmer's quota is exhausted or the confirmer is inactive", async () => {

@@ -119,20 +119,20 @@ async function queueMetrics(deps: ObservabilityDeps): Promise<QueueMetrics> {
   }
 }
 
-/** Utilizadores ativos sem quota disponível hoje (quem enviou hoje ou tem override 0). */
+/**
+ * Utilizadores ativos que esgotaram hoje a quota. Exclui quem tem limite 0 (decisão de um
+ * administrador, não esgotamento): senão a métrica nunca voltaria a 0 e os alarmes perdiam valor.
+ */
 async function usersExhaustedToday(deps: ObservabilityDeps, now: Date) {
   const { start } = lisbonDayWindow(now);
-  const [senders, zeroLimit] = await Promise.all([
-    prisma.smsMessage.groupBy({ by: ["createdById"], where: { createdAt: { gte: start } } }),
-    prisma.user.findMany({ where: { isActive: true, dailyPartsLimit: 0 }, select: { id: true } }),
-  ]);
-  const ids = [...new Set([...senders.map((row) => row.createdById), ...zeroLimit.map((row) => row.id)])];
+  const senders = await prisma.smsMessage.groupBy({ by: ["createdById"], where: { createdAt: { gte: start } } });
+  const ids = senders.map((row) => row.createdById);
   if (ids.length === 0) return 0;
   const users = await prisma.user.findMany({ where: { id: { in: ids }, isActive: true }, select: { id: true, dailyPartsLimit: true } });
   let exhausted = 0;
   for (const user of users) {
     const limit = effectiveDailyLimit(user.dailyPartsLimit, deps.userDailyParts);
-    if (limit - (await quotaUsage(prisma, user.id, now)) <= 0) exhausted += 1;
+    if (limit > 0 && limit - (await quotaUsage(prisma, user.id, now)) <= 0) exhausted += 1;
   }
   return exhausted;
 }

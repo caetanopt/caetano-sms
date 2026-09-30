@@ -94,7 +94,8 @@ export async function updateUser(
         if (quotaChanged) {
           await audit(tx, actor.id, "USER_QUOTA_CHANGED", userId, { from: target.dailyPartsLimit, to: input.dailyPartsLimit ?? null });
         }
-        if (activeChanged && !input.isActive) {
+        // Desativar ou retirar a permissão de envio: as campanhas que confirmou deixam de ter quem responda.
+        if ((activeChanged && !input.isActive) || (roleChanged && can(target.role, "campaigns:send") && !can(input.role, "campaigns:send"))) {
           // As campanhas que este utilizador confirmou pagam a quota dele: pausa imediata
           // (nunca esperar pelo próximo claim/job). Retomar exige cancelar e criar nova.
           const campaigns = await tx.campaign.findMany({
@@ -104,14 +105,15 @@ export async function updateUser(
           if (campaigns.length > 0) {
             await tx.campaign.updateMany({
               where: { id: { in: campaigns.map((c) => c.id) } },
-              data: { pausedAt: new Date(), pausedById: null, lastError: CONFIRMER_INACTIVE_HALT_MESSAGE },
+              data: { pausedAt: new Date(), pausedById: actor.id, lastError: CONFIRMER_INACTIVE_HALT_MESSAGE },
             });
             await tx.auditLog.createMany({
               data: campaigns.map((c) => ({
+                userId: actor.id,
                 action: "CAMPAIGN_HALTED",
                 entityType: "Campaign",
                 entityId: c.id,
-                metadataJson: { reason: CONFIRMER_INACTIVE_HALT_CODE },
+                metadataJson: { reason: CONFIRMER_INACTIVE_HALT_CODE, confirmerId: userId },
               })),
             });
           }

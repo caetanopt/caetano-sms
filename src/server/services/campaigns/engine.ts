@@ -277,8 +277,23 @@ export async function sendCampaignRecipient(job: SendSmsJob, deps: EngineDeps): 
     return;
   }
 
-  // Reafirma a posse imediatamente antes de chamar o provider.
-  if (!(await updateOwned(job, { claimedAt: deps.now() }))) return;
+  // Reafirma a posse imediatamente antes de chamar o provider. Uma reserva com mais de STALE_MS
+  // (ex.: job SQS atrasado) já não conta para a quota nem para o ritmo: não pode ser usada para
+  // enviar; volta a PENDING (mesma tentativa e chave) e será reservada — e cobrada — de novo.
+  const reaffirmed = await prisma.campaignRecipient.updateMany({
+    where: {
+      id: job.recipientId,
+      status: "PROCESSING",
+      claimToken: job.claimToken,
+      claimedAt: { gte: new Date(deps.now().getTime() - STALE_MS) },
+    },
+    data: { claimedAt: deps.now() },
+  });
+  if (reaffirmed.count === 0) {
+    await requeue(job, { status: "PENDING", claimToken: null });
+    deps.logger.log("warn", "campaign.recipient.stale_claim_requeued", { campaignId: campaign.id });
+    return;
+  }
 
   let provider: SmsProvider;
   try {

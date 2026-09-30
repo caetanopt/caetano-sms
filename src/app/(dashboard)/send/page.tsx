@@ -54,8 +54,19 @@ export default async function SendPage() {
         </div>
       )}
 
-      {quota ? <p className="mt-3 text-sm text-slate-600">Quota diária: {describeQuota(quota)}</p> : null}
-      {quota && quota.remaining === 0 ? (
+      {quota ? (
+        <p className="mt-3 text-sm text-slate-600">
+          Quota diária: {describeQuota(quota)}
+          {quota.committedElsewhere.parts > 0
+            ? ` · ${quota.committedElsewhere.parts} reservadas para campanhas tuas por enviar (${quota.committedElsewhere.campaigns.map((c) => `«${c.name}»`).join(", ")})`
+            : ""}
+        </p>
+      ) : null}
+      {quota && quota.limit === 0 ? (
+        <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          A tua conta não tem quota de envio de SMS. Contacta um administrador.
+        </div>
+      ) : quota && quota.remaining === 0 ? (
         <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
           Quota diária esgotada: podes preparar a mensagem, mas o envio só será possível depois das 00:00 (hora de Lisboa) ou se
           um administrador ajustar a quota.

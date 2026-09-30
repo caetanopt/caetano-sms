@@ -25,7 +25,7 @@ export type SendReview = {
   originationLabel: string;
   legalBasisConfirmed: boolean;
   /** Quota diária de partes SMS do operador (informativa; a verificação final é feita ao confirmar). */
-  quota: { used: number; limit: number; remaining: number; afterSend: number } | null;
+  quota: { used: number; limit: number; remaining: number; afterSend: number; committed: number } | null;
 };
 
 export type SendResult = {

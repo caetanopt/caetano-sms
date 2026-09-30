@@ -190,6 +190,7 @@ export async function buildCampaignPreview(
             committed: {
               parts: quota.committedElsewhere.parts,
               names: quota.committedElsewhere.campaigns.map((c) => (c.paused ? `${c.name} (pausada)` : c.name)).slice(0, 3),
+              total: quota.committedElsewhere.campaigns.length,
             },
           }),
         );

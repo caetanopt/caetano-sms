@@ -14,6 +14,7 @@ import {
 import { campaignIdempotencyKey } from "@/features/campaigns/processing-rules";
 import { bucketsFor, type SendRateConfig } from "@/features/rate-limit/rules";
 import { initialBucket, penalize, tryConsume, type BucketState } from "@/features/rate-limit/token-bucket";
+import { can } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/db/prisma";
 import { lisbonDayWindow } from "@/lib/time/lisbon";
 
@@ -140,11 +141,12 @@ export async function quotaUsage(db: Tx, payerId: string, now: Date): Promise<nu
 
 /** Verificação autoritativa do pagador (dentro da transação com o lock). */
 async function checkPayer(tx: Tx, payerId: string, cost: number, limits: SendRateLimits, now: Date): Promise<PayerCheck> {
-  const user = await tx.user.findUnique({ where: { id: payerId }, select: { isActive: true, dailyPartsLimit: true } });
+  const user = await tx.user.findUnique({ where: { id: payerId }, select: { isActive: true, dailyPartsLimit: true, role: true } });
   const { end } = lisbonDayWindow(now);
   const untilReset = Math.max(1_000, end.getTime() - now.getTime());
   if (!user) return { ok: false, limit: "user_blocked", retryAfterMs: untilReset, reason: "missing" };
-  if (!user.isActive) return { ok: false, limit: "user_blocked", retryAfterMs: untilReset, reason: "inactive" };
+  // Conta desativada ou sem permissão de envio (ex.: despromovida a VIEWER) nunca paga envios.
+  if (!user.isActive || !can(user.role, "sms:send")) return { ok: false, limit: "user_blocked", retryAfterMs: untilReset, reason: "inactive" };
   const state = quotaState({
     limit: effectiveDailyLimit(user.dailyPartsLimit, limits.userDailyParts),
     used: await quotaUsage(tx, payerId, now),
@@ -317,15 +319,9 @@ export async function claimNextRecipient(input: {
 
     const campaign = await tx.campaign.findUnique({
       where: { id: input.campaignId },
-      select: { confirmedById: true, maxSendsPerMinute: true, confirmedBy: { select: { isActive: true } } },
+      select: { confirmedById: true, maxSendsPerMinute: true, confirmedBy: { select: { isActive: true, role: true } } },
     });
     if (!campaign) return { kind: "none" };
-
-    if (campaign.maxSendsPerMinute !== null) {
-      const perMinute = effectivePerMinute(input.limits.maxPerMinute, campaign.maxSendsPerMinute);
-      const own = await countCampaignMinute(tx, input.campaignId, input.now);
-      if (own.used >= perMinute) return { kind: "rate_limited", retryAfterMs: own.retryAfterMs, limit: "campaign_per_minute", perMinute };
-    }
 
     const candidate = await tx.campaignRecipient.findFirst({
       where: {
@@ -338,10 +334,17 @@ export async function claimNextRecipient(input: {
     });
     if (!candidate) return { kind: "none" };
 
+    // Ritmo próprio só depois de haver candidato: sem PENDING o passo não deve esperar um minuto.
+    if (campaign.maxSendsPerMinute !== null) {
+      const perMinute = effectivePerMinute(input.limits.maxPerMinute, campaign.maxSendsPerMinute);
+      const own = await countCampaignMinute(tx, input.campaignId, input.now);
+      if (own.used >= perMinute) return { kind: "rate_limited", retryAfterMs: own.retryAfterMs, limit: "campaign_per_minute", perMinute };
+    }
+
     // Sem contacto/texto o envio não chega a acontecer (é ignorado/falhado): não consome nada.
     if (candidate.contact && candidate.segments !== null) {
       // Falha fechada: uma campanha sem confirmador válido nunca envia.
-      if (!campaign.confirmedById || !campaign.confirmedBy?.isActive) {
+      if (!campaign.confirmedById || !campaign.confirmedBy?.isActive || !can(campaign.confirmedBy.role, "campaigns:send")) {
         return { kind: "blocked", code: CONFIRMER_INACTIVE_HALT_CODE, message: CONFIRMER_INACTIVE_HALT_MESSAGE };
       }
       const payer = await checkPayer(tx, campaign.confirmedById, candidate.segments, input.limits, input.now);

@@ -133,7 +133,10 @@ export function SendForm({
     if (review.quota) {
       rows.push([
         "Quota diária após este envio",
-        `${review.quota.afterSend} de ${review.quota.limit} partes SMS disponíveis · ${QUOTA_RESET_TEXT}`,
+        `${review.quota.afterSend} de ${review.quota.limit} partes SMS disponíveis · ${QUOTA_RESET_TEXT}` +
+          (review.quota.committed > 0
+            ? ` · atenção: ${review.quota.committed} estão reservadas para campanhas tuas por enviar; se as usares aqui, essas campanhas serão pausadas`
+            : ""),
       ]);
     }
 

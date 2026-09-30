@@ -220,8 +220,8 @@ em `/users/[id]`, só ADMIN, auditado `USER_QUOTA_CHANGED`; `0` = sem envios sem
 - deploy em bases existentes: passa a existir um limite diário por utilizador — ajustar o env e os
   overrides antes de atualizar.
 
-**Ritmo por campanha**: no rascunho, "Ritmo máximo (mensagens por minuto)" só pode ser **inferior**
-ao global `SMS_MAX_SENDS_PER_MINUTE` (validado no servidor; faz parte do que é revisto e do
+**Ritmo por campanha**: no rascunho, "Ritmo máximo (mensagens por minuto)" só pode ser **igual ou
+inferior** ao global `SMS_MAX_SENDS_PER_MINUTE` (validado no servidor; faz parte do que é revisto e do
 fingerprint; congelado na confirmação). Espalha o envio no tempo sem afetar outras campanhas; a
 revisão mostra a duração mínima estimada com o ritmo efetivo.
 

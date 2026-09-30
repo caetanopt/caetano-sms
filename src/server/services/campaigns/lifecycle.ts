@@ -38,7 +38,7 @@ export async function resumeCampaign(actor: Actor, campaignId: string): Promise<
       startedAt: true,
       lastError: true,
       confirmedById: true,
-      confirmedBy: { select: { isActive: true } },
+      confirmedBy: { select: { isActive: true, role: true } },
     },
   });
   if (!campaign || !["READY", "SENDING"].includes(campaign.status)) {
@@ -46,11 +46,17 @@ export async function resumeCampaign(actor: Actor, campaignId: string): Promise<
   }
   if (campaign.pausedAt) {
     // Pré-verificação informativa (evita o ciclo retomar → pausar): a autoritativa é a da reserva.
-    if (!campaign.confirmedById || !campaign.confirmedBy?.isActive) {
+    if (!campaign.confirmedById || !campaign.confirmedBy?.isActive || !can(campaign.confirmedBy.role, "campaigns:send")) {
       return { ok: false, message: RESUME_BLOCKED_CONFIRMER_INACTIVE };
     }
     const quota = await getUserQuotaSnapshot(campaign.confirmedById, getCampaignLimits().userDailyParts);
-    if (quota && quota.remaining <= 0) return { ok: false, message: resumeBlockedByQuotaMessage(quota) };
+    // O próximo destinatário tem de caber (senão a campanha voltaria a pausar de imediato).
+    const next = await prisma.campaignRecipient.findFirst({
+      where: { campaignId, status: "PENDING", segments: { not: null } },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: { segments: true },
+    });
+    if (quota && next && quota.remaining < (next.segments ?? 1)) return { ok: false, message: resumeBlockedByQuotaMessage(quota) };
     await prisma.campaign.updateMany({
       where: { id: campaignId, status: { in: ["READY", "SENDING"] } },
       data: { pausedAt: null, pausedById: null, lastError: null, consecutiveUnknown: 0, nextStepAt: null },
