@@ -248,3 +248,64 @@ aws cloudwatch put-metric-alarm --region eu-west-1 --alarm-name sms-dlq-not-empt
   --comparison-operator GreaterThanThreshold --alarm-actions <SNS_TOPIC_ARN_ALERTAS>
 ```
 
+## 14. Script de provisionamento (`pnpm aws:provision`)
+
+Cria os recursos das secções de eventos, 12 e 13 de forma **idempotente** (pode ser repetido; só cria
+o que falta). **Por defeito só mostra o plano**; nada é criado sem `--apply`. Nunca apaga nem
+substitui recursos, nunca envia SMS e **não** cria nem altera a identidade de origem (Sender ID /
+número: registo manual na consola AWS).
+
+```bash
+# 1. Ver o plano (só leituras; recusa correr se as credenciais forem de outra conta)
+pnpm aws:provision --account 123456789012 --region eu-west-1 \
+  --webhook-url https://sms.exemplo.pt/api/webhooks/aws-sms-events \
+  --with-sqs --alarm-topic-arn arn:aws:sns:eu-west-1:123456789012:alertas
+
+# 2. Rever e aplicar
+pnpm aws:provision --account 123456789012 ... --apply
+```
+
+| Recurso | Criado quando | Detalhes |
+|---|---|---|
+| Protect Configuration | sempre | proteção contra eliminação; **só `--countries` permitido** (defeito `PT`), restantes `BLOCK`; regras corrigidas se divergirem |
+| Configuration Set `sms-app` | sempre | Protect Configuration associada |
+| Tópico SNS `sms-delivery-events` | sempre | política: só `sms-voice.amazonaws.com` desta conta publica |
+| Destino de eventos `sms-app-sns` | sempre | `TEXT_ALL` → SNS; se existir a apontar para outro tópico, **não é alterado** (aviso) |
+| Subscrição HTTPS | `--webhook-url` | a aplicação tem de estar publicada **antes**, com `AWS_SMS_EVENTS_SNS_TOPIC_ARN` definido (confirma a subscrição sozinha) |
+| Filas `sms-jobs` + `sms-jobs-dlq` | `--with-sqs` | SSE, visibilidade 60 s, DLQ após 5 receções |
+| 5 alarmes CloudWatch | `--alarm-topic-arn` | métricas EMF (§13); alarmes existentes não são alterados |
+
+No fim imprime as variáveis a colocar no ambiente da aplicação (`AWS_SMS_CONFIGURATION_SET`,
+`AWS_SMS_PROTECT_CONFIGURATION_ID`, `AWS_SMS_EVENTS_SNS_TOPIC_ARN`, filas SQS). Não imprime segredos.
+
+Permissões da identidade **que corre o script** (temporária, separada da aplicação; nunca admin):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Effect": "Allow", "Action": "sts:GetCallerIdentity", "Resource": "*" },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "sms-voice:CreateProtectConfiguration", "sms-voice:DescribeProtectConfigurations",
+        "sms-voice:GetProtectConfigurationCountryRuleSet", "sms-voice:UpdateProtectConfigurationCountryRuleSet",
+        "sms-voice:CreateConfigurationSet", "sms-voice:DescribeConfigurationSets",
+        "sms-voice:AssociateProtectConfiguration", "sms-voice:CreateEventDestination", "sms-voice:TagResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["sns:CreateTopic", "sns:GetTopicAttributes", "sns:SetTopicAttributes", "sns:Subscribe", "sns:ListSubscriptionsByTopic", "sns:TagResource"],
+      "Resource": "arn:aws:sns:eu-west-1:<CONTA>:sms-delivery-events"
+    },
+    { "Effect": "Allow", "Action": ["sqs:CreateQueue", "sqs:GetQueueUrl", "sqs:TagQueue"], "Resource": "arn:aws:sqs:eu-west-1:<CONTA>:sms-jobs*" },
+    { "Effect": "Allow", "Action": ["cloudwatch:PutMetricAlarm", "cloudwatch:DescribeAlarms", "cloudwatch:TagResource"], "Resource": "*" }
+  ]
+}
+```
+
+Se uma execução falhar a meio, os passos concluídos mantêm-se e repetir é seguro (a Protect
+Configuration usa um `ClientToken` determinístico, pelo que não é duplicada).
+

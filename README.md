@@ -569,7 +569,8 @@ CLAUDE.md
 
 O `CLAUDE.md` contém o plano completo. A evolução recomendada é:
 
-1. criar na AWS o Configuration Set + SNS (comandos em docs/AWS_SETUP.md, requer aprovação);
+1. criar os recursos AWS com `pnpm aws:provision --account <id>` (plano; `--apply` para criar —
+   docs/AWS_SETUP.md §14, requer aprovação e credenciais da conta certa);
 2. primeiro envio real autorizado seguindo a checklist do §47;
 3. criar a fila SQS + DLQ (docs/AWS_SETUP.md §12) e ativar `SMS_JOB_QUEUE=sqs` quando o volume justificar;
 4. alarmes CloudWatch sobre as métricas EMF (DLQ, campanhas pausadas por erro, throttling);

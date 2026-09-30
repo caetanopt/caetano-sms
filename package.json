@@ -14,6 +14,7 @@
     "worker:campaigns": "tsx scripts/campaign-worker.ts",
     "worker:sms-jobs": "tsx scripts/sms-job-worker.ts",
     "retention": "tsx scripts/retention.ts",
+    "aws:provision": "tsx scripts/aws-provision.ts",
     "lint": "eslint .",
     "typecheck": "prisma generate && tsc --noEmit",
     "test": "vitest run",
@@ -43,6 +44,9 @@
     "zod": "^4.1.0"
   },
   "devDependencies": {
+    "@aws-sdk/client-cloudwatch": "^3.1142.0",
+    "@aws-sdk/client-sns": "^3.1142.0",
+    "@aws-sdk/client-sts": "^3.1142.0",
     "@playwright/test": "1.56.1",
     "@tailwindcss/postcss": "^4.1.0",
     "@types/node": "^22.0.0",
