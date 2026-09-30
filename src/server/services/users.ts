@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
 import { Prisma } from "@/generated/prisma/client";
 import { checkPasswordPolicy, generateTemporaryPassword } from "@/features/auth/password-policy";
+import { CONFIRMER_INACTIVE_HALT_CODE, CONFIRMER_INACTIVE_HALT_MESSAGE } from "@/features/rate-limit/quota";
 import { can, type Role } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/db/prisma";
 import type { Actor, ServiceResult } from "./contacts";
@@ -16,7 +17,7 @@ function isSerializationFailure(error: unknown) {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034";
 }
 
-async function audit(tx: Prisma.TransactionClient, actorId: string, action: string, userId: string, metadata: Record<string, string | boolean | null> = {}) {
+async function audit(tx: Prisma.TransactionClient, actorId: string, action: string, userId: string, metadata: Record<string, string | number | boolean | null> = {}) {
   await tx.auditLog.create({ data: { userId: actorId, action, entityType: "User", entityId: userId, metadataJson: metadata } });
 }
 
@@ -55,7 +56,8 @@ export async function createUser(
 export async function updateUser(
   actor: Actor,
   userId: string,
-  input: { name: string; role: Role; isActive: boolean },
+  /** `dailyPartsLimit` omitido = inalterado; null = defeito da aplicação; 0 = sem envios. */
+  input: { name: string; role: Role; isActive: boolean; dailyPartsLimit?: number | null },
 ): Promise<ServiceResult> {
   if (!can(actor.role, "users:manage")) return NO_PERMISSION;
   try {
@@ -66,8 +68,12 @@ export async function updateUser(
 
         const roleChanged = target.role !== input.role;
         const activeChanged = target.isActive !== input.isActive;
+        const quotaChanged = input.dailyPartsLimit !== undefined && target.dailyPartsLimit !== input.dailyPartsLimit;
         if (userId === actor.id && (roleChanged || !input.isActive)) {
           return { ok: false as const, message: "Não podes alterar o teu próprio perfil nem desativar a tua conta." };
+        }
+        if (userId === actor.id && quotaChanged) {
+          return { ok: false as const, message: "Não podes alterar a tua própria quota; pede a outro administrador." };
         }
         const losesAdmin = target.role === "ADMIN" && target.isActive && (input.role !== "ADMIN" || !input.isActive);
         if (losesAdmin) {
@@ -81,9 +87,35 @@ export async function updateUser(
             name: input.name,
             role: input.role,
             isActive: input.isActive,
+            dailyPartsLimit: input.dailyPartsLimit,
             sessionVersion: roleChanged || activeChanged ? { increment: 1 } : undefined,
           },
         });
+        if (quotaChanged) {
+          await audit(tx, actor.id, "USER_QUOTA_CHANGED", userId, { from: target.dailyPartsLimit, to: input.dailyPartsLimit ?? null });
+        }
+        if (activeChanged && !input.isActive) {
+          // As campanhas que este utilizador confirmou pagam a quota dele: pausa imediata
+          // (nunca esperar pelo próximo claim/job). Retomar exige cancelar e criar nova.
+          const campaigns = await tx.campaign.findMany({
+            where: { confirmedById: userId, status: { in: ["READY", "SENDING"] }, pausedAt: null },
+            select: { id: true },
+          });
+          if (campaigns.length > 0) {
+            await tx.campaign.updateMany({
+              where: { id: { in: campaigns.map((c) => c.id) } },
+              data: { pausedAt: new Date(), pausedById: null, lastError: CONFIRMER_INACTIVE_HALT_MESSAGE },
+            });
+            await tx.auditLog.createMany({
+              data: campaigns.map((c) => ({
+                action: "CAMPAIGN_HALTED",
+                entityType: "Campaign",
+                entityId: c.id,
+                metadataJson: { reason: CONFIRMER_INACTIVE_HALT_CODE },
+              })),
+            });
+          }
+        }
         if (roleChanged) await audit(tx, actor.id, "USER_ROLE_CHANGED", userId, { from: target.role, to: input.role });
         if (activeChanged) await audit(tx, actor.id, input.isActive ? "USER_ACTIVATED" : "USER_DEACTIVATED", userId);
         if (target.name !== input.name) await audit(tx, actor.id, "USER_UPDATED", userId);

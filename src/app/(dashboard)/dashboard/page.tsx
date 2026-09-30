@@ -5,16 +5,11 @@ import { ConsentStatus } from "@/generated/prisma/client";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { getSmsRuntimeConfig } from "@/lib/sms/config";
-import { formatLisbon, startOfLisbonDay, UI_TIME_ZONE } from "@/lib/time/lisbon";
-
-function lisbonToday() {
-  // YYYY-MM-DD em Lisboa.
-  return new Intl.DateTimeFormat("en-CA", { timeZone: UI_TIME_ZONE }).format(new Date());
-}
+import { formatLisbon, lisbonDayKey, startOfLisbonDay } from "@/lib/time/lisbon";
 
 export default async function DashboardPage() {
   await requireUser();
-  const today = lisbonToday();
+  const today = lisbonDayKey(new Date());
   const dayStart = startOfLisbonDay(today)!;
   const monthStart = startOfLisbonDay(`${today.slice(0, 8)}01`)!;
 

@@ -153,7 +153,8 @@ Fila: `SmsJobQueue` com `DirectSmsJobQueue` (defeito: o job corre dentro do pass
 | Variável | Defeito | Significado |
 |---|---|---|
 | `SMS_MAX_RECIPIENTS_PER_CAMPAIGN` | 500 | máximo de elegíveis por campanha |
-| `SMS_MAX_SENDS_PER_MINUTE` | 60 | limite global de envios |
+| `SMS_MAX_SENDS_PER_MINUTE` | 60 | limite global de envios (cada campanha pode apertar) |
+| `SMS_USER_DAILY_PARTS_LIMIT` | 2000 | quota diária de partes SMS por utilizador |
 | `SMS_CAMPAIGN_BATCH_SIZE` | 10 | mensagens por passo |
 | `SMS_BULK_CONFIRMATION_THRESHOLD` | 50 | acima disto pede "ENVIAR N SMS" |
 | `SMS_CAMPAIGN_MAX_ATTEMPTS` | 3 | tentativas por throttling antes de pausar |
@@ -189,6 +190,40 @@ envio é preservada).
 
 Configurar **ao nível ou abaixo** do MPS indicado pela AWS. Com várias instâncias da aplicação, os
 limites são partilhados (estado na base de dados).
+
+### Limites por utilizador e por campanha
+
+**Quota diária por utilizador** (`SMS_USER_DAILY_PARTS_LIMIT`, defeito 2000; override por utilizador
+em `/users/[id]`, só ADMIN, auditado `USER_QUOTA_CHANGED`; `0` = sem envios sem desativar a conta):
+
+- unidade: **partes SMS estimadas**; janela: **dia civil em Europe/Lisbon**, reinício automático às
+  00:00 (dias de 23 h/25 h nas mudanças de hora);
+- **quem paga**: o envio individual é do utilizador autenticado; uma campanha é de **quem a
+  confirmou** na revisão §29 (retomar não transfere a quota);
+- **o que conta**: todas as mensagens criadas hoje pelo utilizador, incluindo em modo de teste, exceto
+  `FAILED` garantidamente não enviadas (`THROTTLED`, `PROVIDER_UNAVAILABLE`, `AUTH_ERROR`,
+  `CONFIGURATION_ERROR`, `SPEND_LIMIT`, `QUOTA_EXCEEDED` — a retentativa é cobrada quando acontece),
+  mais as reservas em curso (destinatários em processamento há menos de 5 min) das campanhas que confirmou;
+- **aplicação atómica**: a quota é verificada na **reserva**, sob o mesmo `pg_advisory_xact_lock` do
+  limite por minuto e dos baldes de MPS — no envio individual na mesma transação que cria o
+  `SmsMessage`; nas campanhas em `claimNextRecipient` (qualquer instância ou worker SQS). Dois pedidos
+  simultâneos nunca passam ambos;
+- **antes de confirmar**: a revisão §29 mostra "Quota diária de quem confirma" e **bloqueia** a
+  confirmação se a campanha não couber no que resta hoje (descontando partes já comprometidas noutras
+  campanhas suas por enviar). O `/send` mostra a quota e recusa mensagens que não cabem;
+- **a meio de uma campanha**: se a quota se esgotar (por exemplo por envios individuais do mesmo
+  utilizador), a campanha é **pausada automaticamente** com o motivo (`CAMPAIGN_HALTED`
+  `USER_QUOTA_EXHAUSTED`) — nunca retoma sozinha à meia-noite ("NO silent bulk send"). Retomar é
+  recusado enquanto a quota continuar esgotada; um ADMIN pode ajustar a quota;
+- **desativar um utilizador** pausa de imediato as campanhas que confirmou (`CONFIRMER_INACTIVE`);
+  a solução é cancelar e criar uma nova campanha para os destinatários restantes;
+- deploy em bases existentes: passa a existir um limite diário por utilizador — ajustar o env e os
+  overrides antes de atualizar.
+
+**Ritmo por campanha**: no rascunho, "Ritmo máximo (mensagens por minuto)" só pode ser **inferior**
+ao global `SMS_MAX_SENDS_PER_MINUTE` (validado no servidor; faz parte do que é revisto e do
+fingerprint; congelado na confirmação). Espalha o envio no tempo sem afetar outras campanhas; a
+revisão mostra a duração mínima estimada com o ritmo efetivo.
 
 Privacidade: o texto final por destinatário é apagado quando o destinatário termina ou o contacto
 é eliminado (o texto enviado fica em `SmsMessage`). **Retenção por definir com o DPO** (proposta: anonimizar
@@ -432,6 +467,7 @@ instâncias) e, com SQS, dos atributos da fila. Nunca incluem números, nomes ou
   (ex.: `sms_messages_window{window,outcome}`, `sms_throttled_window`, `sms_errors_window{code}`,
   `sms_provider_latency_ms{window,quantile}`, `sms_campaigns_paused_with_error`,
   `sms_campaign_recipients_stuck`, `sms_queue_messages{queue,state}`, `sms_queue_up`).
+- Quotas: `sms_quota_users_exhausted_today`, `sms_campaigns_halted_by_quota_24h` e dois avisos na página.
 - **CloudWatch EMF**: com `METRICS_EMF=true`, `pnpm worker:campaigns` escreve a cada
   `METRICS_EMF_INTERVAL_SECONDS` uma linha JSON que o CloudWatch Logs converte em métricas no
   namespace `METRICS_EMF_NAMESPACE` (sem chamadas à AWS). Ativar num único worker.
@@ -537,7 +573,7 @@ O `CLAUDE.md` contém o plano completo. A evolução recomendada é:
 2. primeiro envio real autorizado seguindo a checklist do §47;
 3. criar a fila SQS + DLQ (docs/AWS_SETUP.md §12) e ativar `SMS_JOB_QUEUE=sqs` quando o volume justificar;
 4. alarmes CloudWatch sobre as métricas EMF (DLQ, campanhas pausadas por erro, throttling);
-5. limites por utilizador/campanha e passkeys (WebAuthn) se necessário.
+5. passkeys (WebAuthn) se necessário.
 
 ## Segurança
 

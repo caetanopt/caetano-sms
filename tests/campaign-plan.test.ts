@@ -121,9 +121,20 @@ describe("getCampaignLimits", () => {
       batchSize: 10,
       bulkConfirmationThreshold: 50,
       maxAttempts: 3,
+      userDailyParts: 2000,
     });
     expect(getCampaignLimits({ SMS_MAX_SENDS_PER_MINUTE: "120" }).maxSendsPerMinute).toBe(120);
     expect(() => getCampaignLimits({ SMS_CAMPAIGN_BATCH_SIZE: "0" })).toThrow();
     expect(() => getCampaignLimits({ SMS_MAX_RECIPIENTS_PER_CAMPAIGN: "abc" })).toThrow();
+  });
+});
+
+describe("getCampaignLimits — quota diária por utilizador", () => {
+  it("defaults to 2000 parts and validates the variable (never 0 or unlimited)", () => {
+    expect(getCampaignLimits({}).userDailyParts).toBe(2000);
+    expect(getCampaignLimits({ SMS_USER_DAILY_PARTS_LIMIT: "1" }).userDailyParts).toBe(1);
+    for (const raw of ["0", "-1", "1.5", "abc", "1000001"]) {
+      expect(() => getCampaignLimits({ SMS_USER_DAILY_PARTS_LIMIT: raw })).toThrow(/SMS_USER_DAILY_PARTS_LIMIT/);
+    }
   });
 });

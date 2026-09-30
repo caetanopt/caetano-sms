@@ -23,6 +23,7 @@ export function CampaignEditor({
   campaign,
   lists,
   templates,
+  globalMaxPerMinute,
 }: {
   campaign?: {
     id: string;
@@ -32,9 +33,12 @@ export function CampaignEditor({
     messageBody: string;
     messageType: SmsMessageType;
     variables: TemplateValues;
+    maxSendsPerMinute: number | null;
   };
   lists: EditorList[];
   templates: EditorTemplate[];
+  /** SMS_MAX_SENDS_PER_MINUTE: o ritmo da campanha só pode ser inferior. */
+  globalMaxPerMinute: number;
 }) {
   const [state, formAction, pending] = useActionState<CampaignFormState, FormData>(saveCampaignDraftAction, {});
   const [name, setName] = useState(campaign?.name ?? "");
@@ -43,6 +47,7 @@ export function CampaignEditor({
   const [body, setBody] = useState(campaign?.messageBody ?? "");
   const [messageType, setMessageType] = useState<SmsMessageType | "">(campaign?.messageType ?? "");
   const [variables, setVariables] = useState<TemplateValues>(campaign?.variables ?? {});
+  const [maxPerMinute, setMaxPerMinute] = useState(campaign?.maxSendsPerMinute?.toString() ?? "");
 
   const template = templates.find((option) => option.id === templateId) ?? null;
   const effectiveBody = template ? template.body : body;
@@ -77,6 +82,7 @@ export function CampaignEditor({
       <input type="hidden" name="templateId" value={templateId} />
       <input type="hidden" name="messageBody" value={effectiveBody} />
       <input type="hidden" name="messageType" value={messageType} />
+      <input type="hidden" name="maxSendsPerMinute" value={maxPerMinute} />
       {manualVariables.map((variable) => (
         <input key={variable} type="hidden" name={`var_${variable}`} value={variables[variable] ?? ""} />
       ))}
@@ -133,6 +139,24 @@ export function CampaignEditor({
         </div>
         {template ? <p className="mt-1 text-xs text-slate-500">O tipo é definido pelo template.</p> : null}
       </fieldset>
+
+      <label className="block text-sm font-medium">
+        Ritmo máximo (mensagens por minuto) — opcional
+        <input
+          type="number"
+          inputMode="numeric"
+          min={1}
+          step={1}
+          value={maxPerMinute}
+          onChange={(event) => setMaxPerMinute(event.target.value)}
+          placeholder={`limite global: ${globalMaxPerMinute}`}
+          className={inputClass}
+        />
+        <span className="mt-1 block text-xs font-normal text-slate-500">
+          Deixa vazio para usar o limite global ({globalMaxPerMinute} mensagens por minuto). Só é possível definir um valor
+          inferior; um ritmo mais baixo espalha o envio no tempo.
+        </span>
+      </label>
 
       <label className="block text-sm font-medium">
         Mensagem

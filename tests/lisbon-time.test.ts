@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { endOfLisbonDay, startOfLisbonDay } from "../src/lib/time/lisbon";
+import { endOfLisbonDay, lisbonDayKey, lisbonDayWindow, startOfLisbonDay } from "../src/lib/time/lisbon";
 
 describe("Lisbon day boundaries", () => {
   it("uses UTC+0 in winter and UTC+1 in summer", () => {
@@ -20,5 +20,22 @@ describe("Lisbon day boundaries", () => {
     expect(startOfLisbonDay("2026-02-30")).toBeNull();
     expect(startOfLisbonDay("29/09/2026")).toBeNull();
     expect(startOfLisbonDay("")).toBeNull();
+  });
+});
+
+describe("lisbonDayKey / lisbonDayWindow", () => {
+  it("uses the Lisbon civil day (winter and summer)", () => {
+    expect(lisbonDayKey(new Date("2026-01-15T23:30:00Z"))).toBe("2026-01-15");
+    expect(lisbonDayKey(new Date("2026-07-01T23:30:00Z"))).toBe("2026-07-02");
+    expect(lisbonDayWindow(new Date("2026-10-24T23:00:00Z")).day).toBe("2026-10-25");
+  });
+
+  it("accepts 23 h and 25 h days around DST changes", () => {
+    const spring = lisbonDayWindow(new Date("2026-03-29T12:00:00Z"));
+    expect(spring.end.getTime() - spring.start.getTime()).toBe(23 * 3_600_000);
+    const autumn = lisbonDayWindow(new Date("2026-10-25T12:00:00Z"));
+    expect(autumn.end.getTime() - autumn.start.getTime()).toBe(25 * 3_600_000);
+    expect(autumn.start.toISOString()).toBe("2026-10-24T23:00:00.000Z");
+    expect(autumn.end.toISOString()).toBe("2026-10-26T00:00:00.000Z");
   });
 });

@@ -2,7 +2,7 @@ import { expect, test, type Cookie, type Page } from "@playwright/test";
 import { base32Decode, totp } from "../src/features/auth/totp";
 import { decodeQrPath } from "../tests/helpers/qr-decode";
 import { E2E_METRICS_TOKEN } from "../playwright.config";
-import { E2E_ADMIN, E2E_ADMIN_TOTP_SECRET, E2E_VIEWER } from "./global-setup";
+import { E2E_ADMIN, E2E_ADMIN_TOTP_SECRET, E2E_OPERATOR, E2E_VIEWER } from "./global-setup";
 
 // Fluxos do CLAUDE.md §33: login, contacto, template, envio dry-run, histórico,
 // campanha, confirmação e bloqueio de opt-out. Tudo com o provider fake.
@@ -121,6 +121,8 @@ test("campanha: revisão §29, 2.ª confirmação, envio até concluir", async (
   await expect(summary).toContainText("Excluídos por opt-out1");
   await expect(summary).toContainText("Sem consentimento1");
   await expect(summary).toContainText("ModoTESTE");
+  await expect(summary).toContainText("Ritmo máximo60 mensagens/minuto (limite global)");
+  await expect(summary).toContainText("Quota diária de quem confirma");
   await expect(summary).toContainText("Duração mínima estimada2 s (estimativa pelos limites internos)");
   // §10: número normalizado completo visível para quem pode enviar.
   await expect(summary).toContainText("+351912345678");
@@ -140,6 +142,26 @@ test("campanha: revisão §29, 2.ª confirmação, envio até concluir", async (
   await page.getByRole("link", { name: /Ver mensagens enviadas/ }).click();
   await expect(page.locator("tbody tr")).toHaveCount(2);
   await expect(page.locator("tbody")).not.toContainText("+351******901");
+});
+
+test("ritmo por campanha: acima do global é rejeitado; abaixo aparece na revisão", async ({ page }) => {
+  await login(page, E2E_ADMIN);
+  await page.goto("/campaigns/new");
+  await page.locator("main label", { hasText: "Nome da campanha" }).locator("input").fill("Ritmo E2E");
+  await page.locator("main label", { hasText: "Lista de destinatários" }).locator("select").selectOption({ label: "Clientes E2E (4 contactos)" });
+  await page.locator("input[type=radio][value=TRANSACTIONAL]").check();
+  await page.locator("main textarea").fill("Ola, ritmo controlado.");
+  const pace = page.locator("main label", { hasText: "Ritmo máximo" }).locator("input");
+  await pace.fill("999");
+  await page.getByRole("button", { name: "Criar rascunho" }).click();
+  await expect(page.locator("main [role=alert]")).toContainText("não pode exceder o limite global (60 mensagens por minuto)");
+  await pace.fill("30");
+  await page.getByRole("button", { name: "Criar rascunho" }).click();
+  await page.waitForURL(/\/campaigns\/[a-z0-9]+/);
+  const summary = page.getByRole("region", { name: "Resumo antes do envio" });
+  await expect(summary).toContainText("Ritmo máximo30 mensagens/minuto (definido nesta campanha; global 60)");
+  // 2 mensagens a 30/min → 4 s (domina os 2 s do MPS).
+  await expect(summary).toContainText("Duração mínima estimada4 s");
 });
 
 test("VIEWER vê campanhas sem controlos de envio", async ({ page }) => {
@@ -307,6 +329,70 @@ test("2FA: novo administrador é obrigado a configurar; login com código de rec
   await expect(page.locator("main [role=status]")).toContainText("2FA reposto");
   await admin2.goto("/dashboard");
   await admin2.waitForURL("**/login?error=*");
+  await other.close();
+});
+
+test("quota diária por utilizador: ADMIN define, operador é bloqueado e desbloqueado", async ({ page, browser }) => {
+  await login(page, E2E_ADMIN);
+  await page.goto("/users");
+  await page.getByRole("link", { name: "Operador E2E" }).click();
+  const quotaInput = page.locator("main input[name=dailyPartsLimit]");
+  await quotaInput.fill("1");
+  await page.getByRole("button", { name: "Guardar" }).click();
+  await expect(page.locator("main [role=status]")).toContainText("Utilizador atualizado");
+
+  const other = await browser.newContext();
+  const op = await other.newPage();
+  await op.goto("/login");
+  await op.fill("input[name=email]", E2E_OPERATOR.email);
+  await op.fill("input[name=password]", E2E_OPERATOR.password);
+  await op.click("button");
+  await op.waitForURL("**/dashboard");
+
+  await op.goto("/send");
+  await expect(op.getByText("Quota diária: 0 de 1 partes SMS usadas hoje")).toBeVisible();
+  await op.locator("main label", { hasText: "Destinatário" }).locator("input").fill("912345678");
+  await op.locator("input[type=radio][value=TRANSACTIONAL]").check();
+  await op.locator("textarea").fill("Quota E2E");
+  await op.getByRole("button", { name: "Rever envio" }).click();
+  await expect(op.getByText("Quota diária após este envio")).toBeVisible();
+  await op.getByRole("button", { name: "Confirmar e enviar" }).click();
+  await expect(op.locator("main [role=status]")).toContainText("MODO DE TESTE");
+
+  // 2.ª mensagem: a quota (1 parte) já foi usada.
+  await op.locator("main label", { hasText: "Destinatário" }).locator("input").fill("912345678");
+  await op.locator("input[type=radio][value=TRANSACTIONAL]").check();
+  await op.locator("textarea").fill("Não cabe");
+  await op.getByRole("button", { name: "Rever envio" }).click();
+  await expect(op.locator("main [role=alert]")).toContainText("Quota diária de envio atingida: usaste 1 de 1");
+
+  // Campanha: a revisão bloqueia a confirmação enquanto não couber na quota.
+  await op.goto("/campaigns/new");
+  await op.locator("main label", { hasText: "Nome da campanha" }).locator("input").fill("Quota E2E");
+  await op.locator("main label", { hasText: "Lista de destinatários" }).locator("select").selectOption({ label: "Clientes E2E (4 contactos)" });
+  await op.locator("main label", { hasText: "Template" }).locator("select").selectOption({ label: "Aviso E2E (Transacional)" });
+  await op.locator("main label", { hasText: "Data" }).locator("input").fill("15/10");
+  await op.getByRole("button", { name: "Criar rascunho" }).click();
+  await op.waitForURL(/\/campaigns\/[a-z0-9]+/);
+  await expect(op.locator("main [role=alert]")).toContainText("A campanha precisa de 2 partes SMS e a tua quota diária tem 0 disponíveis");
+  await expect(op.getByRole("button", { name: "Confirmar e enviar" })).toHaveCount(0);
+
+  // O administrador alarga a quota; o operador confirma e a campanha conclui.
+  await quotaInput.fill("100");
+  await page.getByRole("button", { name: "Guardar" }).click();
+  await expect(page.locator("main [role=status]")).toContainText("Utilizador atualizado");
+  await op.reload();
+  await expect(op.getByRole("region", { name: "Resumo antes do envio" })).toContainText("Quota diária de quem confirma1 de 100 partes SMS usadas hoje");
+  const confirmButton = op.getByRole("button", { name: "Confirmar e enviar" });
+  await op.locator("main label", { hasText: "escreve" }).locator("input").fill("ENVIAR 2 SMS");
+  await confirmButton.click();
+  await expect(op.getByRole("region", { name: "Progresso da campanha" })).toContainText("Concluída", { timeout: 30_000 });
+  await op.goto("/send");
+  await expect(op.getByText("Quota diária: 3 de 100 partes SMS usadas hoje")).toBeVisible();
+
+  await quotaInput.fill("");
+  await page.getByRole("button", { name: "Guardar" }).click();
+  await expect(page.locator("main [role=status]")).toContainText("Utilizador atualizado");
   await other.close();
 });
 

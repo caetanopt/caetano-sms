@@ -12,12 +12,18 @@ export function ConfirmForm({
   requiredText,
   promotional,
   eligible,
+  requiredParts,
+  quotaRemainingAfter,
 }: {
   campaignId: string;
   fingerprint: string;
   requiredText: string | null;
   promotional: boolean;
   eligible: number;
+  /** Partes SMS estimadas da campanha (debitadas na quota de quem confirma). */
+  requiredParts: number;
+  /** Quota diária que sobra a quem confirma depois desta campanha (null sem quota calculada). */
+  quotaRemainingAfter: number | null;
 }) {
   const router = useRouter();
   const [state, formAction, pending] = useActionState<ConfirmFormState, FormData>(confirmCampaignAction, {});
@@ -84,6 +90,12 @@ export function ConfirmForm({
           />
         </label>
       ) : null}
+
+      <p className="text-sm text-slate-600">
+        Ao confirmar, as {requiredParts} partes SMS desta campanha são debitadas na tua quota diária à medida que saem
+        {quotaRemainingAfter !== null ? ` (ficarão ${quotaRemainingAfter} disponíveis)` : ""}. Quem confirma é quem responde pelo
+        envio, mesmo que outro operador o retome.
+      </p>
 
       <button
         disabled={!canSubmit}

@@ -40,6 +40,17 @@ export function endOfLisbonDay(isoDate: string): Date | null {
   return startOfLisbonDay(next);
 }
 
+/** `YYYY-MM-DD` em Lisboa para o instante dado. */
+export function lisbonDayKey(date: Date): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: UI_TIME_ZONE }).format(date);
+}
+
+/** Dia civil de Lisboa que contém `now`: início inclusivo e fim exclusivo (= próximo reinício). */
+export function lisbonDayWindow(now: Date): { day: string; start: Date; end: Date } {
+  const day = lisbonDayKey(now);
+  return { day, start: startOfLisbonDay(day)!, end: endOfLisbonDay(day)! };
+}
+
 export function formatLisbon(date: Date) {
   return date.toLocaleString("pt-PT", { timeZone: UI_TIME_ZONE });
 }

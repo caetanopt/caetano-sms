@@ -1,11 +1,27 @@
 import type { Prisma } from "@/generated/prisma/client";
+import {
+  CONFIRMER_INACTIVE_HALT_CODE,
+  CONFIRMER_INACTIVE_HALT_MESSAGE,
+  effectiveDailyLimit,
+  effectivePerMinute,
+  NOT_SENT_ERROR_CODES,
+  quotaAllows,
+  quotaState,
+  USER_QUOTA_HALT_CODE,
+  userQuotaHaltMessage,
+  type QuotaState,
+} from "@/features/rate-limit/quota";
 import { bucketsFor, type SendRateConfig } from "@/features/rate-limit/rules";
 import { initialBucket, penalize, tryConsume, type BucketState } from "@/features/rate-limit/token-bucket";
 import { prisma } from "@/lib/db/prisma";
+import { lisbonDayWindow } from "@/lib/time/lisbon";
 
 /**
- * Rate limiting de envios (CLAUDE.md §19), partilhado por campanhas e envio individual:
+ * Rate limiting e quotas de envio (CLAUDE.md §19), partilhados por campanhas e envio individual:
  * - global: SMS_MAX_SENDS_PER_MINUTE mensagens por minuto;
+ * - por campanha: ritmo máximo opcional (Campaign.maxSendsPerMinute), que só aperta o global;
+ * - por utilizador: quota diária de partes SMS (dia civil em Lisboa), paga por quem envia ou
+ *   por quem confirmou a campanha;
  * - token bucket de partes por segundo (MPS) por identidade de origem e por (origem, país),
  *   que abranda automaticamente após THROTTLED da AWS.
  *
@@ -16,6 +32,8 @@ import { prisma } from "@/lib/db/prisma";
  */
 const SEND_RATE_LOCK_KEY = 58_231_907;
 const WINDOW_MS = 60_000;
+/** Reservas PROCESSING contam para o limite por minuto (60 s) e para a quota até este TTL (= STALE_MS do motor). */
+export const RESERVATION_TTL_MS = 5 * 60_000;
 
 type Tx = Prisma.TransactionClient;
 
@@ -33,19 +51,40 @@ async function lockAndCount(tx: Tx, now: Date) {
   return { used: messages + inFlight, retryAfterMs };
 }
 
+/** Mensagens por minuto de UMA campanha (só consultado quando a campanha tem ritmo próprio). */
+async function countCampaignMinute(tx: Tx, campaignId: string, now: Date) {
+  const since = new Date(now.getTime() - WINDOW_MS);
+  const [messages, inFlight, oldest] = await Promise.all([
+    tx.smsMessage.count({ where: { campaignId, createdAt: { gt: since } } }),
+    tx.campaignRecipient.count({ where: { campaignId, status: "PROCESSING", claimedAt: { gt: since } } }),
+    tx.smsMessage.findFirst({ where: { campaignId, createdAt: { gt: since } }, orderBy: { createdAt: "asc" }, select: { createdAt: true } }),
+  ]);
+  const retryAfterMs = oldest ? Math.max(1_000, oldest.createdAt.getTime() + WINDOW_MS - now.getTime()) : 1_000;
+  return { used: messages + inFlight, retryAfterMs };
+}
+
 export type SendRateLimits = {
   maxPerMinute: number;
   rate: SendRateConfig;
   /** Identifica a identidade de origem atual (hash, ver `currentOrigin`). */
   originKey: string;
+  /** Defeito da quota diária (CampaignLimits.userDailyParts); o override vem de User.dailyPartsLimit lido na transação. */
+  userDailyParts: number;
 };
 
 /** Destino e custo (partes estimadas) do envio a reservar. */
 export type SendTarget = { phoneE164: string; segments: number };
 
-export type RateCheck =
-  | { ok: true }
-  | { ok: false; retryAfterMs: number; limit: "per_minute" | "mps"; label?: string };
+export type RateBlocked =
+  | { ok: false; limit: "per_minute" | "campaign_per_minute" | "mps"; retryAfterMs: number; label?: string; perMinute?: number }
+  | { ok: false; limit: "user_quota"; retryAfterMs: number; quota: QuotaState; cost: number }
+  | { ok: false; limit: "user_blocked"; retryAfterMs: number; reason: "inactive" | "missing" };
+export type RateCheck = { ok: true } | RateBlocked;
+type PayerCheck = { ok: true } | Extract<RateBlocked, { limit: "user_quota" | "user_blocked" }>;
+type MpsCheck = { ok: true } | { ok: false; limit: "mps"; retryAfterMs: number; label: string };
+
+/** Dados (sem tipos do ORM) para reservar capacidade e quota na mesma transação do INSERT do SmsMessage. */
+export type CapacityReservation = { target: SendTarget; payerId: string; limits: SendRateLimits; now: Date };
 
 type BucketRow = { key: string; tokens: number; rateFactor: number; updatedAt: Date };
 
@@ -53,11 +92,106 @@ function toState(row: BucketRow | undefined, fallback: () => BucketState): Bucke
   return row ? { tokens: row.tokens, rateFactor: row.rateFactor, updatedAt: row.updatedAt } : fallback();
 }
 
+// ---------------------------------------------------------------------------
+// Quota diária por utilizador
+// ---------------------------------------------------------------------------
+
+/**
+ * Partes usadas hoje (dia civil de Lisboa) por quem paga: mensagens criadas por si (exceto
+ * FAILED garantidamente não enviadas) + reservas em curso de campanhas que confirmou.
+ * `db` pode ser a transação com o lock (autoritativo) ou o cliente (informativo).
+ */
+export async function quotaUsage(db: Tx, payerId: string, now: Date): Promise<number> {
+  const { start } = lisbonDayWindow(now);
+  const notSent = { status: "FAILED" as const, errorCode: { in: [...NOT_SENT_ERROR_CODES] } };
+  const [sum, withoutEstimate, reserved] = await Promise.all([
+    db.smsMessage.aggregate({
+      _sum: { segmentCountEstimate: true },
+      where: { createdById: payerId, createdAt: { gte: start }, NOT: notSent },
+    }),
+    db.smsMessage.count({ where: { createdById: payerId, createdAt: { gte: start }, segmentCountEstimate: null, NOT: notSent } }),
+    db.campaignRecipient.aggregate({
+      _sum: { segments: true },
+      where: {
+        status: "PROCESSING",
+        claimedAt: { gte: new Date(Math.max(start.getTime(), now.getTime() - RESERVATION_TTL_MS)) },
+        campaign: { confirmedById: payerId },
+      },
+    }),
+  ]);
+  return (sum._sum.segmentCountEstimate ?? 0) + withoutEstimate + (reserved._sum.segments ?? 0);
+}
+
+/** Verificação autoritativa do pagador (dentro da transação com o lock). */
+async function checkPayer(tx: Tx, payerId: string, cost: number, limits: SendRateLimits, now: Date): Promise<PayerCheck> {
+  const user = await tx.user.findUnique({ where: { id: payerId }, select: { isActive: true, dailyPartsLimit: true } });
+  const { end } = lisbonDayWindow(now);
+  const untilReset = Math.max(1_000, end.getTime() - now.getTime());
+  if (!user) return { ok: false, limit: "user_blocked", retryAfterMs: untilReset, reason: "missing" };
+  if (!user.isActive) return { ok: false, limit: "user_blocked", retryAfterMs: untilReset, reason: "inactive" };
+  const state = quotaState({
+    limit: effectiveDailyLimit(user.dailyPartsLimit, limits.userDailyParts),
+    used: await quotaUsage(tx, payerId, now),
+    now,
+  });
+  if (!quotaAllows(state, cost)) return { ok: false, limit: "user_quota", retryAfterMs: untilReset, quota: state, cost };
+  return { ok: true };
+}
+
+export type UserQuotaSnapshot = QuotaState & {
+  active: boolean;
+  /** Partes ainda por enviar (PENDING) em campanhas READY/SENDING confirmadas por este utilizador. */
+  committedElsewhere: { parts: number; campaigns: Array<{ id: string; name: string; parts: number; paused: boolean }> };
+};
+
+/** Leitura informativa (sem lock) para UI, revisão §29 e retoma. null = utilizador inexistente. */
+export async function getUserQuotaSnapshot(
+  userId: string,
+  defaultDailyParts: number,
+  now = new Date(),
+  options: { excludeCampaignId?: string } = {},
+): Promise<UserQuotaSnapshot | null> {
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { isActive: true, dailyPartsLimit: true } });
+  if (!user) return null;
+  const [used, committed] = await Promise.all([
+    quotaUsage(prisma, userId, now),
+    prisma.campaignRecipient.groupBy({
+      by: ["campaignId"],
+      where: {
+        status: "PENDING",
+        campaign: {
+          confirmedById: userId,
+          status: { in: ["READY", "SENDING"] },
+          ...(options.excludeCampaignId ? { id: { not: options.excludeCampaignId } } : {}),
+        },
+      },
+      _sum: { segments: true },
+    }),
+  ]);
+  const ids = committed.map((row) => row.campaignId);
+  const campaigns = ids.length
+    ? await prisma.campaign.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, pausedAt: true } })
+    : [];
+  const rows = committed.map((row) => {
+    const campaign = campaigns.find((c) => c.id === row.campaignId);
+    return { id: row.campaignId, name: campaign?.name ?? "—", parts: row._sum.segments ?? 0, paused: campaign?.pausedAt !== null };
+  });
+  return {
+    ...quotaState({ limit: effectiveDailyLimit(user.dailyPartsLimit, defaultDailyParts), used, now }),
+    active: user.isActive,
+    committedElsewhere: { parts: rows.reduce((sum, row) => sum + row.parts, 0), campaigns: rows },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// MPS (token buckets)
+// ---------------------------------------------------------------------------
+
 /**
  * Consome `segments` tokens de todos os baldes do destino, ou nenhum (tudo-ou-nada).
  * Tem de correr dentro da transação que detém o lock.
  */
-async function consumeBuckets(tx: Tx, target: SendTarget, limits: SendRateLimits, now: Date): Promise<RateCheck> {
+async function consumeBuckets(tx: Tx, target: SendTarget, limits: SendRateLimits, now: Date): Promise<MpsCheck> {
   const buckets = bucketsFor({ originKey: limits.originKey, phoneE164: target.phoneE164 }, limits.rate);
   const rows = await tx.sendRateBucket.findMany({ where: { key: { in: buckets.map((b) => b.key) } } });
   const byKey = new Map(rows.map((row) => [row.key, row]));
@@ -86,18 +220,29 @@ async function consumeBuckets(tx: Tx, target: SendTarget, limits: SendRateLimits
   return { ok: true };
 }
 
-async function reserve(tx: Tx, target: SendTarget, limits: SendRateLimits, now: Date): Promise<RateCheck> {
+// ---------------------------------------------------------------------------
+// Reservas
+// ---------------------------------------------------------------------------
+
+/**
+ * Reserva completa para um envio individual, numa transação que ainda não tem o lock (toma-o).
+ * Ordem: global/minuto → pagador (ativo, quota) → MPS. Um bloqueio nunca grava nada.
+ */
+export async function reserveInTransaction(tx: Tx, target: SendTarget, payerId: string, limits: SendRateLimits, now: Date): Promise<RateCheck> {
   const { used, retryAfterMs } = await lockAndCount(tx, now);
   if (used >= limits.maxPerMinute) return { ok: false, retryAfterMs, limit: "per_minute" };
+  const payer = await checkPayer(tx, payerId, Math.max(1, target.segments), limits, now);
+  if (!payer.ok) return payer;
   return consumeBuckets(tx, target, limits, now);
 }
 
 /**
- * Reserva capacidade para um envio individual (limite por minuto + MPS). A reserva é
- * consumida mesmo que o envio acabe por não acontecer (conservador).
+ * Reserva isolada (testes de MPS/limites). No envio individual real a reserva corre na mesma
+ * transação que cria o SmsMessage (ver `createPendingMessage` do store), para que dois pedidos
+ * simultâneos não passem ambos.
  */
-export async function reserveSendCapacity(target: SendTarget, limits: SendRateLimits, now = new Date()): Promise<RateCheck> {
-  return prisma.$transaction((tx) => reserve(tx, target, limits, now));
+export async function reserveSendCapacity(target: SendTarget, payerId: string, limits: SendRateLimits, now = new Date()): Promise<RateCheck> {
+  return prisma.$transaction((tx) => reserveInTransaction(tx, target, payerId, limits, now));
 }
 
 /** THROTTLED da AWS: esvazia e abranda os baldes do destino (AIMD, ver token-bucket.ts). */
@@ -134,12 +279,15 @@ export type ClaimedRecipient = {
 
 export type ClaimResult =
   | { kind: "claimed"; recipient: ClaimedRecipient }
-  | { kind: "rate_limited"; retryAfterMs: number; limit: "per_minute" | "mps"; label?: string }
+  | { kind: "rate_limited"; retryAfterMs: number; limit: "per_minute" | "campaign_per_minute" | "mps"; label?: string; perMinute?: number }
+  /** A campanha não pode continuar (quota de quem confirmou esgotada ou conta desativada): pausar. */
+  | { kind: "blocked"; code: typeof USER_QUOTA_HALT_CODE | typeof CONFIRMER_INACTIVE_HALT_CODE; message: string }
   | { kind: "none" };
 
 /**
  * Reserva o próximo destinatário PENDING de uma campanha, sob o lock de rate limit:
- * a contagem, o consumo de MPS e a reserva são atómicos em relação a outros passos/campanhas.
+ * a contagem, a quota de quem confirmou, o consumo de MPS e a reserva são atómicos em
+ * relação a outros passos/campanhas/instâncias (o worker SQS só executa reservas já cobradas).
  */
 export async function claimNextRecipient(input: {
   campaignId: string;
@@ -150,6 +298,18 @@ export async function claimNextRecipient(input: {
   return prisma.$transaction(async (tx) => {
     const { used, retryAfterMs } = await lockAndCount(tx, input.now);
     if (used >= input.limits.maxPerMinute) return { kind: "rate_limited", retryAfterMs, limit: "per_minute" };
+
+    const campaign = await tx.campaign.findUnique({
+      where: { id: input.campaignId },
+      select: { confirmedById: true, maxSendsPerMinute: true, confirmedBy: { select: { isActive: true } } },
+    });
+    if (!campaign) return { kind: "none" };
+
+    if (campaign.maxSendsPerMinute !== null) {
+      const perMinute = effectivePerMinute(input.limits.maxPerMinute, campaign.maxSendsPerMinute);
+      const own = await countCampaignMinute(tx, input.campaignId, input.now);
+      if (own.used >= perMinute) return { kind: "rate_limited", retryAfterMs: own.retryAfterMs, limit: "campaign_per_minute", perMinute };
+    }
 
     const candidate = await tx.campaignRecipient.findFirst({
       where: {
@@ -162,8 +322,18 @@ export async function claimNextRecipient(input: {
     });
     if (!candidate) return { kind: "none" };
 
-    // Sem contacto/texto o envio não chega a acontecer (é ignorado/falhado): não consome MPS.
+    // Sem contacto/texto o envio não chega a acontecer (é ignorado/falhado): não consome nada.
     if (candidate.contact && candidate.segments !== null) {
+      // Falha fechada: uma campanha sem confirmador válido nunca envia.
+      if (!campaign.confirmedById || !campaign.confirmedBy?.isActive) {
+        return { kind: "blocked", code: CONFIRMER_INACTIVE_HALT_CODE, message: CONFIRMER_INACTIVE_HALT_MESSAGE };
+      }
+      const payer = await checkPayer(tx, campaign.confirmedById, candidate.segments, input.limits, input.now);
+      if (!payer.ok) {
+        return payer.limit === "user_quota"
+          ? { kind: "blocked", code: USER_QUOTA_HALT_CODE, message: userQuotaHaltMessage(payer.quota) }
+          : { kind: "blocked", code: CONFIRMER_INACTIVE_HALT_CODE, message: CONFIRMER_INACTIVE_HALT_MESSAGE };
+      }
       const rate = await consumeBuckets(tx, { phoneE164: candidate.contact.phoneE164, segments: candidate.segments }, input.limits, input.now);
       if (!rate.ok) return { kind: "rate_limited", retryAfterMs: rate.retryAfterMs, limit: rate.limit, label: rate.label };
     }

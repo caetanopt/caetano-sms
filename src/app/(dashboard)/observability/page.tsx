@@ -140,6 +140,12 @@ export default async function ObservabilityPage() {
           value={metrics.rate.bucketsSlowed}
           hint={`baldes abrandados · ${metrics.rate.bucketsThrottled15m} com throttling (15 min)`}
         />
+        <Stat label="Utilizadores com quota esgotada hoje" value={metrics.quota.usersExhaustedToday} hint="quota diária de partes SMS" />
+        <Stat
+          label="Campanhas pausadas por quota (24 h)"
+          value={metrics.quota.campaignsHaltedByQuota24h}
+          hint="quota de quem confirmou esgotada ou conta desativada"
+        />
         <Stat
           label="Fila SQS"
           value={metrics.queue.kind === "direct" ? "—" : metrics.queue.up ? metrics.queue.visible : "indisponível"}

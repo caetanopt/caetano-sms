@@ -10,6 +10,8 @@ export type CampaignLimits = {
   bulkConfirmationThreshold: number;
   /** Tentativas por destinatário (só para falhas garantidamente não enviadas, ex.: throttling). */
   maxAttempts: number;
+  /** Quota diária de partes SMS por utilizador (defeito; override em User.dailyPartsLimit). */
+  userDailyParts: number;
 };
 
 type Env = Record<string, string | undefined>;
@@ -31,5 +33,7 @@ export function getCampaignLimits(env: Env = process.env): CampaignLimits {
     batchSize: readInt(env, "SMS_CAMPAIGN_BATCH_SIZE", 10, 1, 100),
     bulkConfirmationThreshold: readInt(env, "SMS_BULK_CONFIRMATION_THRESHOLD", 50, 1, 100_000),
     maxAttempts: readInt(env, "SMS_CAMPAIGN_MAX_ATTEMPTS", 3, 1, 10),
+    // Mínimo 1: não existe "ilimitado" por env; o bloqueio total é o override 0 por utilizador.
+    userDailyParts: readInt(env, "SMS_USER_DAILY_PARTS_LIMIT", 2000, 1, 1_000_000),
   };
 }

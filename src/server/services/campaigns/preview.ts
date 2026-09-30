@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { getCampaignLimits } from "@/features/campaigns/limits";
+import { confirmationQuotaBlocker, effectivePerMinute } from "@/features/rate-limit/quota";
+import { getUserQuotaSnapshot, type UserQuotaSnapshot } from "../send-rate";
 import { planCampaign, type CampaignMember, type CampaignPlan } from "@/features/campaigns/plan";
 import { prisma } from "@/lib/db/prisma";
 import type { TemplateValues } from "@/lib/sms/templates";
@@ -33,6 +35,12 @@ export type CampaignPreview = {
   requiredConfirmationText: string | null;
   /** Promocionais: finalidade do último opt-in dos elegíveis. */
   purposeBreakdown: Array<{ purpose: string; count: number }>;
+  /** Ritmo máximo (mensagens/min): o da campanha só aperta o global. */
+  pace: { campaign: number | null; global: number; effective: number };
+  /** Quota diária de quem vai confirmar (só com `viewer`); informativa — a autoritativa é a da reserva. */
+  quota: UserQuotaSnapshot | null;
+  /** Partes em falta na quota para esta campanha caber (0 = cabe). */
+  quotaShortfall: number;
 };
 
 export function campaignVariables(json: unknown): TemplateValues {
@@ -51,6 +59,8 @@ export function computeFingerprint(input: {
   body: string;
   variables: TemplateValues;
   origin: Pick<CampaignOrigin, "mode" | "provider" | "originationHash">;
+  /** O ritmo faz parte do que o operador revê. */
+  maxSendsPerMinute: number | null;
   plan: CampaignPlan;
   /** contactId → E.164 revisto (o número faz parte do que é confirmado). */
   phones: ReadonlyMap<string, string>;
@@ -75,6 +85,7 @@ export function computeFingerprint(input: {
         input.origin.mode,
         input.origin.provider,
         input.origin.originationHash,
+        input.maxSendsPerMinute,
         eligible,
         skipped,
       ]),
@@ -86,7 +97,10 @@ export function computeFingerprint(input: {
  * Calcula, no servidor e a partir da base de dados, tudo o que o §29 exige mostrar
  * antes da confirmação. Usado tanto na revisão como (de novo) na confirmação.
  */
-export async function buildCampaignPreview(campaignId: string): Promise<CampaignPreview | null> {
+export async function buildCampaignPreview(
+  campaignId: string,
+  viewer?: { userId: string },
+): Promise<CampaignPreview | null> {
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },
     include: {
@@ -159,12 +173,37 @@ export async function buildCampaignPreview(campaignId: string): Promise<Campaign
     );
   }
 
+  // Quota de quem vai confirmar: a campanha tem de caber no que resta hoje, descontando as partes
+  // já comprometidas noutras campanhas suas. Não entra no fingerprint (muda a cada envio).
+  let quota: UserQuotaSnapshot | null = null;
+  let quotaShortfall = 0;
+  if (viewer) {
+    quota = await getUserQuotaSnapshot(viewer.userId, limits.userDailyParts, new Date(), { excludeCampaignId: campaign.id });
+    if (quota) {
+      const available = Math.max(0, quota.remaining - quota.committedElsewhere.parts);
+      if (plan.counts.totalSegments > available) {
+        quotaShortfall = plan.counts.totalSegments - available;
+        plan.blockers.unshift(
+          confirmationQuotaBlocker({
+            required: plan.counts.totalSegments,
+            state: quota,
+            committed: {
+              parts: quota.committedElsewhere.parts,
+              names: quota.committedElsewhere.campaigns.map((c) => (c.paused ? `${c.name} (pausada)` : c.name)).slice(0, 3),
+            },
+          }),
+        );
+      }
+    }
+  }
+
   const fingerprint = computeFingerprint({
     campaignId: campaign.id,
     messageType: campaign.messageType,
     body,
     variables,
     origin,
+    maxSendsPerMinute: campaign.maxSendsPerMinute,
     plan,
     phones: new Map(contacts.map((contact) => [contact.id, contact.phoneE164])),
   });
@@ -188,5 +227,12 @@ export async function buildCampaignPreview(campaignId: string): Promise<Campaign
     requiredConfirmationText:
       plan.counts.eligible > limits.bulkConfirmationThreshold ? `ENVIAR ${plan.counts.eligible} SMS` : null,
     purposeBreakdown,
+    pace: {
+      campaign: campaign.maxSendsPerMinute,
+      global: limits.maxSendsPerMinute,
+      effective: effectivePerMinute(limits.maxSendsPerMinute, campaign.maxSendsPerMinute),
+    },
+    quota,
+    quotaShortfall,
   };
 }

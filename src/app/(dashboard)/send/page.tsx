@@ -1,4 +1,7 @@
+import { getCampaignLimits } from "@/features/campaigns/limits";
 import { initialSendFormState } from "@/features/messages/send-form-state";
+import { describeQuota } from "@/features/rate-limit/quota";
+import { getUserQuotaSnapshot, type UserQuotaSnapshot } from "@/server/services/send-rate";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { getSmsRuntimeConfig } from "@/lib/sms/config";
@@ -15,6 +18,15 @@ function readMode() {
 export default async function SendPage() {
   const user = await requireUser();
   const mode = readMode();
+  // Quota diária do operador (informativa; a verificação final acontece ao confirmar).
+  let quota: UserQuotaSnapshot | null = null;
+  if (user.role !== "VIEWER") {
+    try {
+      quota = await getUserQuotaSnapshot(user.id, getCampaignLimits().userDailyParts);
+    } catch {
+      quota = null;
+    }
+  }
   const templates =
     user.role === "VIEWER"
       ? []
@@ -41,6 +53,14 @@ export default async function SendPage() {
           O serviço de envio não está configurado corretamente. Contacta um administrador.
         </div>
       )}
+
+      {quota ? <p className="mt-3 text-sm text-slate-600">Quota diária: {describeQuota(quota)}</p> : null}
+      {quota && quota.remaining === 0 ? (
+        <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          Quota diária esgotada: podes preparar a mensagem, mas o envio só será possível depois das 00:00 (hora de Lisboa) ou se
+          um administrador ajustar a quota.
+        </div>
+      ) : null}
 
       {user.role === "VIEWER" ? (
         <p className="mt-6 rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-600">

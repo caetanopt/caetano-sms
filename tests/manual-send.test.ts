@@ -3,6 +3,7 @@ import { createMemoryLogger } from "../src/lib/logging/logger";
 import { getSmsRuntimeConfig } from "../src/lib/sms/config";
 import { FakeSmsProvider, type FakeScenario } from "../src/lib/sms/fake-provider";
 import type { SendSmsInput, SmsProvider } from "../src/lib/sms/types";
+import type { CapacityReservation, RateCheck, SendRateLimits } from "../src/server/services/send-rate";
 import {
   executeManualSend,
   prepareManualSend,
@@ -31,6 +32,8 @@ function createMemoryStore(
   templates: StoredTemplate[] = [],
 ) {
   const messages: StoredMessage[] = [];
+  const reservations: (CapacityReservation | null)[] = [];
+  let rateCheck: ((reservation: CapacityReservation) => RateCheck) | null = null;
   const suppressed = new Set(suppressedPhones);
   const audits: AuditEntry[] = [];
   const contactsByPhone = new Map<string, StoredContact>();
@@ -50,11 +53,16 @@ function createMemoryStore(
     async findMessageByIdempotencyKey(key) {
       return messages.find((message) => message.idempotencyKey === key) ?? null;
     },
-    async createPendingMessage(data) {
-      if (messages.some((message) => message.idempotencyKey === data.idempotencyKey)) return null;
+    async createPendingMessage(data, reservation) {
+      reservations.push(reservation ?? null);
+      if (reservation && rateCheck) {
+        const check = rateCheck(reservation);
+        if (!check.ok) return { kind: "rate_limited", check };
+      }
+      if (messages.some((message) => message.idempotencyKey === data.idempotencyKey)) return { kind: "duplicate" };
       const message = { ...data, id: `msg_${messages.length + 1}`, status: "PENDING" };
       messages.push(message);
-      return { id: message.id };
+      return { kind: "created", id: message.id };
     },
     async completeMessage(id, update, audit) {
       Object.assign(messages.find((message) => message.id === id)!, update satisfies MessageOutcomeUpdate);
@@ -74,7 +82,7 @@ function createMemoryStore(
       audits.push(entry);
     },
   };
-  return { store, messages, audits, suppressed };
+  return { store, messages, audits, suppressed, reservations, setRateCheck: (fn: typeof rateCheck) => void (rateCheck = fn) };
 }
 
 class RecordingProvider implements SmsProvider {
@@ -398,30 +406,49 @@ describe("executeManualSend", () => {
     });
   });
 
-  it("respects the global rate limit before creating the message", async () => {
-    const { deps, messages, provider } = setup();
-    const outcome = await executeManualSend(request(), {
-      ...deps,
-      checkRate: async () => ({ ok: false, retryAfterMs: 12_000, limit: "per_minute" }),
-    });
-    expect(outcome).toMatchObject({ kind: "rate_limited", message: expect.stringMatching(/12 s/) });
+  const rateLimits: SendRateLimits = {
+    maxPerMinute: 60,
+    rate: { originMps: 1, countryMps: {}, defaultCountryMps: 1, burstSeconds: 1 },
+    originKey: "origin",
+    userDailyParts: 2000,
+  };
+  const quota = (used: number, limit: number) => ({ limit, used, remaining: Math.max(0, limit - used), day: "2026-09-30", resetsAt: new Date() });
+
+  it("reserves capacity and quota atomically with the message; a refused reservation creates nothing", async () => {
+    const { deps, messages, provider, reservations, setRateCheck } = setup();
+    setRateCheck(() => ({ ok: false, limit: "per_minute", retryAfterMs: 12_000 }));
+    const outcome = await executeManualSend(request({ message: "x".repeat(161) }), { ...deps, rateLimits });
+    expect(outcome).toMatchObject({ kind: "rate_limited", message: expect.stringMatching(/por minuto.*12 s/) });
+    expect(reservations).toEqual([
+      { target: { phoneE164: expect.stringMatching(/^\+351/), segments: 2 }, payerId: "user_1", limits: rateLimits, now: expect.any(Date) },
+    ]);
     expect(messages).toHaveLength(0);
     expect((provider as RecordingProvider).calls).toHaveLength(0);
   });
 
-  it("reserves MPS capacity with destination and parts, and explains the MPS limit", async () => {
-    const { deps, messages } = setup();
-    const targets: { phoneE164: string; segments: number }[] = [];
-    const outcome = await executeManualSend(request({ message: "x".repeat(161) }), {
-      ...deps,
-      checkRate: async (target) => {
-        targets.push(target);
-        return { ok: false, retryAfterMs: 400, limit: "mps", label: "país PT" };
-      },
-    });
-    expect(targets).toEqual([{ phoneE164: expect.stringMatching(/^\+351/), segments: 2 }]);
-    expect(outcome).toMatchObject({ kind: "rate_limited", message: expect.stringMatching(/partes SMS por segundo \(país PT\).*1 s/) });
+  it("explains each limit: MPS, daily quota, oversized message and blocked account", async () => {
+    const { deps, messages, setRateCheck } = setup();
+    const run = async (check: RateCheck) => {
+      setRateCheck(() => check);
+      const outcome = await executeManualSend(request(), { ...deps, rateLimits });
+      return outcome.kind === "rate_limited" ? outcome.message : outcome.kind;
+    };
+    expect(await run({ ok: false, limit: "mps", retryAfterMs: 400, label: "país PT" })).toMatch(/partes SMS por segundo \(país PT\).*1 s/);
+    expect(await run({ ok: false, limit: "user_quota", retryAfterMs: 3_600_000, quota: quota(9, 10), cost: 2 })).toMatch(
+      /Quota diária de envio atingida: usaste 9 de 10 partes SMS hoje e esta mensagem precisa de 2/,
+    );
+    expect(await run({ ok: false, limit: "user_quota", retryAfterMs: 3_600_000, quota: quota(0, 1), cost: 2 })).toMatch(/acima da tua quota diária \(1\)/);
+    expect(await run({ ok: false, limit: "user_quota", retryAfterMs: 3_600_000, quota: quota(0, 0), cost: 1 })).toMatch(/não tem quota de envio/);
+    expect(await run({ ok: false, limit: "user_blocked", retryAfterMs: 3_600_000, reason: "inactive" })).toMatch(/não pode enviar SMS/);
     expect(messages).toHaveLength(0);
+    expect(await run({ ok: true })).toBe("accepted");
+    expect(messages).toHaveLength(1);
+  });
+
+  it("does not reserve when rate limits are not configured (tests only)", async () => {
+    const { deps, reservations } = setup();
+    await executeManualSend(request(), deps);
+    expect(reservations).toEqual([null]);
   });
 
   it("reports AWS throttling to the rate limiter", async () => {

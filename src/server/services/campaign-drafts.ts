@@ -1,3 +1,5 @@
+import { getCampaignLimits } from "@/features/campaigns/limits";
+import { campaignPaceTooHighMessage } from "@/features/rate-limit/quota";
 import { can } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/db/prisma";
 import { MANUAL_VARIABLES, validateVariableValue, type TemplateValues } from "@/lib/sms/templates";
@@ -14,6 +16,8 @@ export type CampaignDraftInput = {
   messageBody: string;
   messageType: SmsMessageType;
   variables: TemplateValues;
+  /** Ritmo máximo (mensagens/min). null/omitido = limite global; só pode ser inferior ao global. */
+  maxSendsPerMinute?: number | null;
 };
 
 /** Só variáveis manuais da whitelist; valores validados. */
@@ -55,6 +59,15 @@ async function resolveDraft(input: CampaignDraftInput) {
   const variables = sanitizeManualVariables(input.variables);
   if (!variables.ok) return variables;
 
+  const maxSendsPerMinute = input.maxSendsPerMinute ?? null;
+  const globalPerMinute = getCampaignLimits().maxSendsPerMinute;
+  if (maxSendsPerMinute !== null && (!Number.isInteger(maxSendsPerMinute) || maxSendsPerMinute < 1)) {
+    return { ok: false as const, message: "O ritmo máximo tem de ser um inteiro positivo." };
+  }
+  if (maxSendsPerMinute !== null && maxSendsPerMinute > globalPerMinute) {
+    return { ok: false as const, message: campaignPaceTooHighMessage(globalPerMinute) };
+  }
+
   return {
     ok: true as const,
     data: {
@@ -64,6 +77,7 @@ async function resolveDraft(input: CampaignDraftInput) {
       messageBody,
       messageType: input.messageType,
       variablesJson: variables.value,
+      maxSendsPerMinute,
     },
   };
 }
@@ -84,7 +98,7 @@ export async function createCampaignDraft(
         action: "CAMPAIGN_CREATED",
         entityType: "Campaign",
         entityId: created.id,
-        metadataJson: { name: created.name, messageType: created.messageType, listId: created.listId },
+        metadataJson: { name: created.name, messageType: created.messageType, listId: created.listId, maxSendsPerMinute: created.maxSendsPerMinute },
       },
     });
     return created;
@@ -113,7 +127,7 @@ export async function updateCampaignDraft(
       action: "CAMPAIGN_UPDATED",
       entityType: "Campaign",
       entityId: campaignId,
-      metadataJson: { messageType: resolved.data.messageType, listId: resolved.data.listId },
+      metadataJson: { messageType: resolved.data.messageType, listId: resolved.data.listId, maxSendsPerMinute: resolved.data.maxSendsPerMinute },
     },
   });
   return { ok: true, value: undefined };

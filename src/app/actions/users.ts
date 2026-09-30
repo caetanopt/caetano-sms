@@ -17,7 +17,14 @@ const role = z.enum(["ADMIN", "OPERATOR", "VIEWER"], { error: "Seleciona o perfi
 const name = z.string().trim().min(1, "Indica o nome.").max(120, "Nome demasiado longo.");
 
 const createSchema = z.object({ name, email: z.email("Email inválido.").max(200), role });
-const updateSchema = z.object({ name, role, isActive: z.enum(["true", "false"], { error: "Estado inválido." }) });
+const updateSchema = z.object({
+  name,
+  role,
+  isActive: z.enum(["true", "false"], { error: "Estado inválido." }),
+  dailyPartsLimit: z.union([z.literal(""), z.coerce.number().int().min(0).max(1_000_000)], {
+    error: "Quota diária: inteiro entre 0 e 1000000 partes SMS, ou vazio para o valor por defeito.",
+  }),
+});
 const passwordSchema = z
   .object({
     currentPassword: z.string().min(1, "Indica a palavra-passe atual.").max(MAX_PASSWORD_LENGTH),
@@ -47,9 +54,19 @@ export async function createUserAction(_previous: UserSecretFormState, formData:
 export async function updateUserAction(userId: string, formData: FormData) {
   const admin = await requireAdmin();
   const path = `/users/${encodeURIComponent(userId)}`;
-  const parsed = updateSchema.safeParse({ name: formData.get("name"), role: formData.get("role"), isActive: formData.get("isActive") });
+  const parsed = updateSchema.safeParse({
+    name: formData.get("name"),
+    role: formData.get("role"),
+    isActive: formData.get("isActive"),
+    dailyPartsLimit: String(formData.get("dailyPartsLimit") ?? "").trim(),
+  });
   if (!parsed.success) redirectWith(path, { error: parsed.error.issues[0]?.message ?? "Dados inválidos." });
-  const result = await updateUser(admin, userId, { ...parsed.data, isActive: parsed.data.isActive === "true" });
+  const result = await updateUser(admin, userId, {
+    name: parsed.data.name,
+    role: parsed.data.role,
+    isActive: parsed.data.isActive === "true",
+    dailyPartsLimit: parsed.data.dailyPartsLimit === "" ? null : parsed.data.dailyPartsLimit,
+  });
   if (!result.ok) redirectWith(path, { error: result.message });
   redirectWith(path, { success: "Utilizador atualizado." });
 }

@@ -13,6 +13,7 @@ import {
   type TemplateValues,
 } from "@/lib/sms/templates";
 import type { SmsMessageType } from "@/lib/sms/types";
+import { QUOTA_RESET_TEXT } from "@/features/rate-limit/quota";
 
 export type SendTemplateOption = { id: string; name: string; body: string; messageType: SmsMessageType };
 
@@ -128,6 +129,12 @@ export function SendForm({
     ];
     if (!review.contactName && review.legalBasisConfirmed) {
       rows.push(["Base legal", "Confirmada pelo operador"]);
+    }
+    if (review.quota) {
+      rows.push([
+        "Quota diária após este envio",
+        `${review.quota.afterSend} de ${review.quota.limit} partes SMS disponíveis · ${QUOTA_RESET_TEXT}`,
+      ]);
     }
 
     return (

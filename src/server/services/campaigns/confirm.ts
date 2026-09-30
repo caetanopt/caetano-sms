@@ -29,13 +29,27 @@ export async function confirmCampaign(
     return { ok: false, message: "O teu perfil não permite enviar campanhas." };
   }
 
-  const preview = await buildCampaignPreview(input.campaignId);
+  // Quem confirma é quem paga a quota: a revisão é calculada para o ator.
+  const preview = await buildCampaignPreview(input.campaignId, { userId: actor.id });
   if (!preview) return { ok: false, message: "Campanha não encontrada." };
   if (preview.campaign.status !== "DRAFT") {
     // Nunca é tratado como sucesso: não pode reiniciar um envio pausado/parado.
     return { ok: false, message: "Esta campanha já foi confirmada. Consulta o estado atual." };
   }
-  if (preview.plan.blockers.length > 0) return { ok: false, message: preview.plan.blockers.join(" ") };
+  if (preview.plan.blockers.length > 0) {
+    if (preview.quotaShortfall > 0) {
+      await prisma.auditLog.create({
+        data: {
+          userId: actor.id,
+          action: "CAMPAIGN_CONFIRMATION_REJECTED",
+          entityType: "Campaign",
+          entityId: input.campaignId,
+          metadataJson: { reason: "quota", shortfall: preview.quotaShortfall },
+        },
+      });
+    }
+    return { ok: false, message: preview.plan.blockers.join(" ") };
+  }
 
   // Tudo é recalculado no servidor: se algo mudou desde a revisão, pede-se nova revisão.
   if (preview.fingerprint !== input.fingerprint) {
@@ -123,6 +137,8 @@ export async function confirmCampaign(
             purposeAcknowledged: campaign.messageType === "PROMOTIONAL" ? input.purposeAcknowledged : null,
             secondConfirmation: preview.requiredConfirmationText !== null,
             fingerprint: preview.fingerprint.slice(0, 16),
+            maxSendsPerMinute: preview.pace.campaign,
+            quotaRemainingBefore: preview.quota?.remaining ?? null,
           },
         },
       });

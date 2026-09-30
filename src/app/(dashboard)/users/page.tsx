@@ -19,7 +19,17 @@ export default async function UsersPage({
   const params = await searchParams;
   const users = await prisma.user.findMany({
     orderBy: [{ isActive: "desc" }, { name: "asc" }],
-    select: { id: true, name: true, email: true, role: true, isActive: true, mustChangePassword: true, lastLoginAt: true, totpEnabledAt: true },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      role: true,
+      isActive: true,
+      mustChangePassword: true,
+      lastLoginAt: true,
+      totpEnabledAt: true,
+      dailyPartsLimit: true,
+    },
   });
 
   return (
@@ -44,6 +54,7 @@ export default async function UsersPage({
               <th className="px-4 py-3">Perfil</th>
               <th className="px-4 py-3">Estado</th>
               <th className="px-4 py-3">2FA</th>
+              <th className="px-4 py-3">Quota diária</th>
               <th className="px-4 py-3">Último início de sessão</th>
             </tr>
           </thead>
@@ -66,6 +77,7 @@ export default async function UsersPage({
                 <td className="px-4 py-3">
                   {row.totpEnabledAt ? "Ativo" : row.role === "ADMIN" ? <span className="text-amber-700">Por configurar</span> : "—"}
                 </td>
+                <td className="px-4 py-3">{row.dailyPartsLimit ?? "defeito"}</td>
                 <td className="px-4 py-3 text-slate-500">{dateTime(row.lastLoginAt)}</td>
               </tr>
             ))}

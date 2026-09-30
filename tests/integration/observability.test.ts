@@ -25,7 +25,7 @@ const SQS = {
 } as const;
 
 function deps(overrides: Partial<ObservabilityDeps> = {}): ObservabilityDeps {
-  return { now: () => now, runtime: getSmsRuntimeConfig({ SMS_PROVIDER: "fake" }), queue: { kind: "direct" }, ...overrides };
+  return { now: () => now, runtime: getSmsRuntimeConfig({ SMS_PROVIDER: "fake" }), queue: { kind: "direct" }, userDailyParts: 2000, ...overrides };
 }
 
 async function message(data: { status: string; createdAt: Date; errorCode?: string; latency?: number; dryRun?: boolean; sentAt?: Date }) {
@@ -186,5 +186,41 @@ describe("GET /api/metrics", () => {
   it("fails safely with an invalid token configuration", async () => {
     process.env.METRICS_TOKEN = "short";
     expect((await call("Bearer short")).status).toBe(503);
+  });
+});
+
+describe("quota metrics", () => {
+  it("counts users without quota today and campaigns halted by quota or inactive confirmer", async () => {
+    const other = await prisma.user.create({ data: { name: "Op", email: "op@test.local", passwordHash: "x", role: "OPERATOR", dailyPartsLimit: 1 } });
+    const zero = await prisma.user.create({ data: { name: "Zero", email: "zero@test.local", passwordHash: "x", role: "OPERATOR", dailyPartsLimit: 0 } });
+    await message({ status: "ACCEPTED", createdAt: minutesAgo(1), latency: 10 }); // admin: 1 de 2000
+    await prisma.smsMessage.create({
+      data: {
+        idempotencyKey: "obs-other",
+        destinationPhoneE164: "+351912345678",
+        messageType: "TRANSACTIONAL",
+        body: "x",
+        provider: "fake",
+        status: "ACCEPTED",
+        segmentCountEstimate: 1,
+        createdAt: minutesAgo(2),
+        createdById: other.id,
+      },
+    });
+    for (const reason of ["USER_QUOTA_EXHAUSTED", "CONFIRMER_INACTIVE", "ORIGIN_CHANGED"]) {
+      await prisma.auditLog.create({ data: { action: "CAMPAIGN_HALTED", entityType: "Campaign", entityId: "c", metadataJson: { reason } } });
+    }
+    await prisma.auditLog.create({
+      data: { action: "CAMPAIGN_HALTED", entityType: "Campaign", entityId: "old", metadataJson: { reason: "USER_QUOTA_EXHAUSTED" }, createdAt: minutesAgo(25 * 60) },
+    });
+    const metrics = await collectOperationalMetrics(deps());
+    expect(metrics.quota).toEqual({ usersExhaustedToday: 2, campaignsHaltedByQuota24h: 2 }); // other (1/1) + zero (0/0)
+    expect(zero.id).toBeTruthy();
+
+    process.env.METRICS_TOKEN = "m".repeat(40);
+    const body = await (await GET(new Request("http://localhost/api/metrics", { headers: { authorization: `Bearer ${"m".repeat(40)}` } }))).text();
+    expect(body).toContain("sms_quota_users_exhausted_today 2");
+    expect(body).toContain("sms_campaigns_halted_by_quota_24h 2");
+    expect(body).not.toContain("op@test.local");
   });
 });

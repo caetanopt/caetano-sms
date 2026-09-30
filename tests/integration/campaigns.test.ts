@@ -3,7 +3,6 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/db/prisma";
 import { FakeSmsProvider, type FakeScenario } from "@/lib/sms/fake-provider";
 import type { SendSmsInput, SmsProvider } from "@/lib/sms/types";
-import { createCampaignDraft } from "@/server/services/campaign-drafts";
 import { confirmCampaign } from "@/server/services/campaigns/confirm";
 import {
   idempotencyKeyFor,
@@ -20,7 +19,11 @@ import { SqsSmsJobQueue } from "@/server/services/campaigns/sqs-job-queue";
 import { buildCampaignPreview } from "@/server/services/campaigns/preview";
 import { changeContactConsent, createContact, deleteContact, type Actor } from "@/server/services/contacts";
 import { addContactToList, createList } from "@/server/services/lists";
-import { reserveSendCapacity } from "@/server/services/send-rate";
+import { getCampaignLimits } from "@/features/campaigns/limits";
+import { prismaManualSendStore } from "@/server/repositories/prisma-manual-send-store";
+import { createCampaignDraft, updateCampaignDraft } from "@/server/services/campaign-drafts";
+import { getUserQuotaSnapshot, reserveSendCapacity } from "@/server/services/send-rate";
+import { updateUser } from "@/server/services/users";
 import { createActors, resetDatabase } from "./helpers";
 
 let actors: Record<"admin" | "operator" | "viewer", Actor>;
@@ -29,6 +32,7 @@ const optIn = { source: "loja", purpose: "marketing" };
 beforeEach(async () => {
   await resetDatabase();
   actors = await createActors();
+  contactSeq = 0;
 });
 afterEach(() => {
   delete process.env.SMS_BULK_CONFIRMATION_THRESHOLD;
@@ -48,7 +52,11 @@ class RecordingProvider implements SmsProvider {
 
 const HIGH_RATE = { originMps: 1000, countryMps: {}, defaultCountryMps: 1000, burstSeconds: 1 };
 const checkPerMinute = (maxPerMinute: number) =>
-  reserveSendCapacity({ phoneE164: "+351912345678", segments: 1 }, { maxPerMinute, rate: HIGH_RATE, originKey: "test" });
+  reserveSendCapacity(
+    { phoneE164: "+351912345678", segments: 1 },
+    actors.operator.id,
+    { maxPerMinute, rate: HIGH_RATE, originKey: "test", userDailyParts: 100_000 },
+  );
 
 function engine(provider: RecordingProvider, overrides: Partial<EngineDeps> = {}) {
   let clock = Date.now();
@@ -56,7 +64,7 @@ function engine(provider: RecordingProvider, overrides: Partial<EngineDeps> = {}
     origin: () => currentOrigin({ SMS_PROVIDER: "fake" }),
     getProvider: () => provider,
     logger: { log: () => {} },
-    limits: { maxRecipients: 500, maxSendsPerMinute: 1000, batchSize: 10, bulkConfirmationThreshold: 50, maxAttempts: 3 },
+    limits: { maxRecipients: 500, maxSendsPerMinute: 1000, batchSize: 10, bulkConfirmationThreshold: 50, maxAttempts: 3, userDailyParts: 100_000 },
     rate: HIGH_RATE,
     now: () => new Date(clock),
     random: () => 0.5,
@@ -66,13 +74,18 @@ function engine(provider: RecordingProvider, overrides: Partial<EngineDeps> = {}
 }
 
 /** Lista com contactos: `opted` = OPTED_IN, restantes UNKNOWN / OPTED_OUT. */
-async function setup(options: { optedIn?: number; unknown?: number; optedOut?: number; messageType?: "TRANSACTIONAL" | "PROMOTIONAL" } = {}) {
-  const list = await createList(actors.operator, { name: "Clientes" });
+/** Números únicos entre chamadas a setup() no mesmo teste (a base é limpa entre testes). */
+let contactSeq = 0;
+
+async function setup(
+  options: { optedIn?: number; unknown?: number; optedOut?: number; messageType?: "TRANSACTIONAL" | "PROMOTIONAL"; listName?: string } = {},
+) {
+  const list = await createList(actors.operator, { name: options.listName ?? "Clientes" });
   if (!list.ok) throw new Error("list");
   const contactIds: string[] = [];
-  let n = 0;
   const add = async (consentStatus: "OPTED_IN" | "UNKNOWN" | "OPTED_OUT") => {
-    n += 1;
+    contactSeq += 1;
+    const n = contactSeq;
     const created = await createContact(actors.operator, {
       name: `Cliente${n} Silva`,
       phone: `91${String(1000000 + n).padStart(7, "0")}`,
@@ -215,7 +228,7 @@ describe("campaign processing", () => {
     await confirm(campaignId);
     const provider = new RecordingProvider();
     const { deps } = engine(provider, {
-      limits: { maxRecipients: 500, maxSendsPerMinute: 1000, batchSize: 2, bulkConfirmationThreshold: 50, maxAttempts: 3 },
+      limits: { maxRecipients: 500, maxSendsPerMinute: 1000, batchSize: 2, bulkConfirmationThreshold: 50, maxAttempts: 3, userDailyParts: 100_000 },
     });
     for (let round = 0; round < 6; round += 1) {
       await Promise.all([processCampaignStep(campaignId, deps), processCampaignStep(campaignId, deps), processCampaignStep(campaignId, deps)]);
@@ -231,7 +244,7 @@ describe("campaign processing", () => {
     await confirm(campaignId);
     const provider = new RecordingProvider();
     const { deps } = engine(provider, {
-      limits: { maxRecipients: 500, maxSendsPerMinute: 2, batchSize: 10, bulkConfirmationThreshold: 50, maxAttempts: 3 },
+      limits: { maxRecipients: 500, maxSendsPerMinute: 2, batchSize: 10, bulkConfirmationThreshold: 50, maxAttempts: 3, userDailyParts: 100_000 },
     });
     const step = await processCampaignStep(campaignId, deps);
     expect(step).toMatchObject({ state: "wait", reason: expect.stringMatching(/por minuto/) });
@@ -280,7 +293,7 @@ describe("campaign processing", () => {
     await confirm(campaignId);
     const provider = new RecordingProvider("throttle");
     const { deps, advance } = engine(provider, {
-      limits: { maxRecipients: 500, maxSendsPerMinute: 1000, batchSize: 10, bulkConfirmationThreshold: 50, maxAttempts: 2 },
+      limits: { maxRecipients: 500, maxSendsPerMinute: 1000, batchSize: 10, bulkConfirmationThreshold: 50, maxAttempts: 2, userDailyParts: 100_000 },
     });
 
     const first = await processCampaignStep(campaignId, deps);
@@ -413,7 +426,7 @@ describe("campaign processing", () => {
     await confirm(campaignId);
     const provider = new RecordingProvider();
     const { deps } = engine(provider, {
-      limits: { maxRecipients: 500, maxSendsPerMinute: 1000, batchSize: 1, bulkConfirmationThreshold: 50, maxAttempts: 3 },
+      limits: { maxRecipients: 500, maxSendsPerMinute: 1000, batchSize: 1, bulkConfirmationThreshold: 50, maxAttempts: 3, userDailyParts: 100_000 },
     });
     await processCampaignStep(campaignId, deps);
     expect(await cancelCampaign(actors.operator, campaignId)).toMatchObject({ ok: true });
@@ -566,7 +579,7 @@ describe("campaign safety edge cases", () => {
     await confirm(campaignId);
     const provider = new RecordingProvider();
     const { deps } = engine(provider, {
-      limits: { maxRecipients: 500, maxSendsPerMinute: 1000, batchSize: 1, bulkConfirmationThreshold: 50, maxAttempts: 3 },
+      limits: { maxRecipients: 500, maxSendsPerMinute: 1000, batchSize: 1, bulkConfirmationThreshold: 50, maxAttempts: 3, userDailyParts: 100_000 },
     });
     await processCampaignStep(campaignId, deps);
     await pauseCampaign(actors.operator, campaignId);
@@ -701,7 +714,7 @@ describe("campaign worker", () => {
     // O operador iniciou a primeira (1 passo com lote de 1) e depois fechou a página.
     const provider = new RecordingProvider();
     const { deps } = engine(provider, {
-      limits: { maxRecipients: 500, maxSendsPerMinute: 1000, batchSize: 1, bulkConfirmationThreshold: 50, maxAttempts: 3 },
+      limits: { maxRecipients: 500, maxSendsPerMinute: 1000, batchSize: 1, bulkConfirmationThreshold: 50, maxAttempts: 3, userDailyParts: 100_000 },
     });
     await processCampaignStep(started.campaignId, deps);
 
@@ -894,5 +907,193 @@ describe("SQS job queue + worker", () => {
     expect(provider.calls).toHaveLength(1);
     const [recipient] = await prisma.campaignRecipient.findMany({ where: { campaignId } });
     expect(recipient).toMatchObject({ status: "ACCEPTED", attempt: 1 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Limites por utilizador e por campanha (CLAUDE.md §19)
+// ---------------------------------------------------------------------------
+
+describe("per-user daily quota and per-campaign pace", () => {
+  const draftInput = (listId: string, maxSendsPerMinute: number | null) => ({
+    name: "Outubro",
+    listId,
+    templateId: null,
+    messageBody: "Olá {{firstName}}, novidades até {{date}}.",
+    messageType: "TRANSACTIONAL" as const,
+    variables: { date: "31/10" },
+    maxSendsPerMinute,
+  });
+  const setQuota = (userId: string, dailyPartsLimit: number | null) => prisma.user.update({ where: { id: userId }, data: { dailyPartsLimit } });
+  let seq = 0;
+  /** Envio individual do utilizador pelo caminho real (reserva + INSERT na mesma transação). */
+  const manualSend = (userId: string, segments = 1) => {
+    seq += 1;
+    return prismaManualSendStore.createPendingMessage(
+      {
+        idempotencyKey: `manual-${seq}`,
+        contactId: null,
+        destinationPhoneE164: "+351919999999",
+        messageType: "TRANSACTIONAL",
+        body: "x",
+        encodingEstimate: "GSM_7",
+        segmentCountEstimate: segments,
+        provider: "fake",
+        dryRun: true,
+        templateId: null,
+        campaignId: null,
+        createdById: userId,
+      },
+      { target: { phoneE164: "+351919999999", segments }, payerId: userId, limits: { maxPerMinute: 1000, rate: HIGH_RATE, originKey: "test", userDailyParts: 100_000 }, now: new Date() },
+    );
+  };
+
+  it("a draft pace above the global limit is rejected; the pace is part of the reviewed fingerprint", async () => {
+    const { campaignId, listId } = await setup({ optedIn: 2 });
+    const global = getCampaignLimits().maxSendsPerMinute;
+    expect(await updateCampaignDraft(actors.operator, campaignId, draftInput(listId, global + 1))).toMatchObject({
+      ok: false,
+      message: expect.stringMatching(/não pode exceder o limite global/),
+    });
+    expect(await updateCampaignDraft(actors.operator, campaignId, draftInput(listId, 0))).toMatchObject({ ok: false });
+    const before = (await buildCampaignPreview(campaignId))!;
+    expect(await updateCampaignDraft(actors.operator, campaignId, draftInput(listId, 2))).toMatchObject({ ok: true });
+    const after = (await buildCampaignPreview(campaignId))!;
+    expect(after.pace).toEqual({ campaign: 2, global, effective: 2 });
+    expect(after.fingerprint).not.toBe(before.fingerprint);
+    expect(await createCampaignDraft(actors.operator, draftInput(listId, global + 5))).toMatchObject({ ok: false });
+  });
+
+  it("a campaign with its own pace waits between minutes, without affecting the rest", async () => {
+    const { campaignId, listId } = await setup({ optedIn: 3 });
+    await updateCampaignDraft(actors.operator, campaignId, draftInput(listId, 2));
+    await confirm(campaignId);
+    const provider = new RecordingProvider();
+    const { deps, advance } = engine(provider);
+    expect(await processCampaignStep(campaignId, deps)).toMatchObject({
+      state: "wait",
+      reason: "Ritmo máximo desta campanha (2 mensagens por minuto).",
+    });
+    expect(provider.calls).toHaveLength(2);
+    advance(61_000);
+    expect(await runUntilSettled(campaignId, deps, advance)).toMatchObject({ state: "done", status: "COMPLETED" });
+    expect(provider.calls).toHaveLength(3);
+  });
+
+  it("confirmation is blocked when the campaign does not fit the confirmer's remaining quota", async () => {
+    const { campaignId } = await setup({ optedIn: 3 });
+    await setQuota(actors.operator.id, 2);
+    const anonymous = (await buildCampaignPreview(campaignId))!;
+    const forOperator = (await buildCampaignPreview(campaignId, { userId: actors.operator.id }))!;
+    expect(forOperator.plan.blockers[0]).toMatch(/A campanha precisa de 3 partes SMS e a tua quota diária tem 2 disponíveis/);
+    expect(forOperator.quotaShortfall).toBe(1);
+    expect(forOperator.fingerprint).toBe(anonymous.fingerprint);
+    expect(anonymous.plan.blockers).toHaveLength(0);
+
+    expect(await confirm(campaignId)).toMatchObject({ ok: false, message: expect.stringMatching(/quota diária/) });
+    expect(await prisma.auditLog.count({ where: { action: "CAMPAIGN_CONFIRMATION_REJECTED", entityId: campaignId } })).toBe(1);
+    expect(await prisma.campaignRecipient.count({ where: { campaignId } })).toBe(0);
+
+    // Outro utilizador com quota confirma (e passa a pagar).
+    const result = await confirmCampaign(actors.admin, { campaignId, fingerprint: anonymous.fingerprint, confirmationText: "", purposeAcknowledged: false });
+    expect(result).toMatchObject({ ok: true });
+    expect(await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } })).toMatchObject({ confirmedById: actors.admin.id });
+  });
+
+  it("parts already committed in other campaigns of the confirmer reduce what can be confirmed; cancelling frees them", async () => {
+    const first = await setup({ optedIn: 3 });
+    const second = await setup({ optedIn: 2, listName: "Clientes B" });
+    await setQuota(actors.operator.id, 4);
+    await confirm(first.campaignId);
+    const blocked = (await buildCampaignPreview(second.campaignId, { userId: actors.operator.id }))!;
+    expect(blocked.plan.blockers[0]).toMatch(/tem 1 disponíveis \(0 de 4 usadas hoje; 3 reservadas em «Outubro»\)/);
+    expect(blocked.quota?.committedElsewhere).toMatchObject({ parts: 3 });
+    expect(await cancelCampaign(actors.operator, first.campaignId)).toMatchObject({ ok: true });
+    expect((await buildCampaignPreview(second.campaignId, { userId: actors.operator.id }))!.plan.blockers).toHaveLength(0);
+  });
+
+  it("halts a running campaign when the confirmer's quota runs out; resume is refused until the quota changes", async () => {
+    const { campaignId } = await setup({ optedIn: 3 });
+    await setQuota(actors.operator.id, 3);
+    await confirm(campaignId);
+    // Um envio individual do mesmo utilizador consome 1 das 3 partes.
+    expect(await manualSend(actors.operator.id)).toMatchObject({ kind: "created" });
+
+    const provider = new RecordingProvider();
+    const { deps, advance } = engine(provider);
+    const step = await processCampaignStep(campaignId, deps);
+    expect(step).toMatchObject({ state: "paused", reason: expect.stringMatching(/quota diária.*3 de 3/) });
+    expect(provider.calls).toHaveLength(2);
+    expect(await recipientCounts(campaignId)).toMatchObject({ ACCEPTED: 2, PENDING: 1, PROCESSING: 0 });
+    const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    expect(campaign).toMatchObject({ status: "SENDING", pausedById: null, lastError: expect.stringMatching(/Envio parado: a quota diária/) });
+    expect(campaign.pausedAt).not.toBeNull();
+    expect(await prisma.auditLog.findFirst({ where: { action: "CAMPAIGN_HALTED", entityId: campaignId } })).toMatchObject({
+      metadataJson: { reason: "USER_QUOTA_EXHAUSTED" },
+    });
+
+    expect(await resumeCampaign(actors.admin, campaignId)).toMatchObject({ ok: false, message: expect.stringMatching(/Não é possível retomar.*3 de 3/) });
+    expect(await prisma.auditLog.count({ where: { action: "CAMPAIGN_RESUMED", entityId: campaignId } })).toBe(0);
+    const { runWorkerOnce } = await import("@/server/services/campaigns/worker");
+    await runWorkerOnce(deps);
+    expect(provider.calls).toHaveLength(2);
+
+    expect(await updateUser(actors.admin, actors.operator.id, { name: "OPERATOR", role: "OPERATOR", isActive: true, dailyPartsLimit: 10 })).toMatchObject({ ok: true });
+    expect(await resumeCampaign(actors.admin, campaignId)).toMatchObject({ ok: true });
+    expect(await runUntilSettled(campaignId, deps, advance)).toMatchObject({ state: "done", status: "COMPLETED" });
+    expect(provider.calls).toHaveLength(3);
+    const messages = await prisma.smsMessage.findMany({ where: { campaignId } });
+    expect(messages.every((m) => m.createdById === actors.operator.id)).toBe(true);
+    expect(await getUserQuotaSnapshot(actors.admin.id, 1000)).toMatchObject({ used: 0 });
+  });
+
+  it("two campaigns of the same confirmer processed concurrently never exceed the quota", async () => {
+    const a = await setup({ optedIn: 3 });
+    const b = await setup({ optedIn: 3, listName: "Clientes B" });
+    await confirm(a.campaignId);
+    await confirm(b.campaignId);
+    await setQuota(actors.operator.id, 4);
+    const provider = new RecordingProvider();
+    const { deps } = engine(provider);
+    await Promise.all([processCampaignStep(a.campaignId, deps), processCampaignStep(b.campaignId, deps)]);
+    const [ca, cb] = await Promise.all([recipientCounts(a.campaignId), recipientCounts(b.campaignId)]);
+    expect(ca.ACCEPTED + cb.ACCEPTED).toBe(4);
+    expect(provider.calls).toHaveLength(4);
+    expect(await prisma.smsMessage.count({ where: { createdById: actors.operator.id } })).toBe(4);
+    expect(await prisma.campaign.count({ where: { id: { in: [a.campaignId, b.campaignId] }, pausedAt: { not: null } } })).toBeGreaterThanOrEqual(1);
+  });
+
+  it("deactivating the confirmer pauses their campaigns immediately; reactivating allows resuming", async () => {
+    const { campaignId } = await setup({ optedIn: 2 });
+    await confirm(campaignId);
+    expect(await updateUser(actors.admin, actors.operator.id, { name: "OPERATOR", role: "OPERATOR", isActive: false })).toMatchObject({ ok: true });
+    const paused = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    expect(paused.pausedAt).not.toBeNull();
+    expect(paused.lastError).toMatch(/conta de quem confirmou a campanha foi desativada/);
+    expect(await prisma.auditLog.findFirst({ where: { action: "CAMPAIGN_HALTED", entityId: campaignId } })).toMatchObject({
+      metadataJson: { reason: "CONFIRMER_INACTIVE" },
+    });
+    const provider = new RecordingProvider();
+    const { deps, advance } = engine(provider);
+    expect(await processCampaignStep(campaignId, deps)).toMatchObject({ state: "paused" });
+    expect(provider.calls).toHaveLength(0);
+    expect(await resumeCampaign(actors.admin, campaignId)).toMatchObject({ ok: false, message: expect.stringMatching(/desativada/) });
+
+    await updateUser(actors.admin, actors.operator.id, { name: "OPERATOR", role: "OPERATOR", isActive: true });
+    expect(await resumeCampaign(actors.admin, campaignId)).toMatchObject({ ok: true });
+    expect(await runUntilSettled(campaignId, deps, advance)).toMatchObject({ state: "done", status: "COMPLETED" });
+    expect(provider.calls).toHaveLength(2);
+  });
+
+  it("the resumer never pays: messages are charged to the confirmer", async () => {
+    const { campaignId } = await setup({ optedIn: 2 });
+    await confirm(campaignId); // operator
+    expect(await pauseCampaign(actors.operator, campaignId)).toMatchObject({ ok: true });
+    expect(await resumeCampaign(actors.admin, campaignId)).toMatchObject({ ok: true });
+    const provider = new RecordingProvider();
+    const { deps, advance } = engine(provider);
+    await runUntilSettled(campaignId, deps, advance);
+    expect(await getUserQuotaSnapshot(actors.operator.id, 1000)).toMatchObject({ used: 2 });
+    expect(await getUserQuotaSnapshot(actors.admin.id, 1000)).toMatchObject({ used: 0 });
   });
 });

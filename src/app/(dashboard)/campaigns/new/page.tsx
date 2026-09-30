@@ -18,7 +18,7 @@ export default async function NewCampaignPage() {
             Cria primeiro uma <Link href="/lists" className="underline">lista de contactos</Link>.
           </p>
         ) : (
-          <CampaignEditor lists={data.lists} templates={data.templates} />
+          <CampaignEditor lists={data.lists} templates={data.templates} globalMaxPerMinute={data.globalMaxPerMinute} />
         )
       ) : (
         <p className="mt-6 rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-600">

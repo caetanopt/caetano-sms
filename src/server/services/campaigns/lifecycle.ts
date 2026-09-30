@@ -1,6 +1,9 @@
+import { getCampaignLimits } from "@/features/campaigns/limits";
+import { RESUME_BLOCKED_CONFIRMER_INACTIVE, resumeBlockedByQuotaMessage } from "@/features/rate-limit/quota";
 import { can } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/db/prisma";
 import type { Actor, ServiceResult } from "../contacts";
+import { getUserQuotaSnapshot } from "../send-rate";
 
 const NO_PERMISSION = { ok: false as const, message: "O teu perfil não permite gerir o envio de campanhas." };
 
@@ -29,12 +32,25 @@ export async function resumeCampaign(actor: Actor, campaignId: string): Promise<
   if (!can(actor.role, "campaigns:send")) return NO_PERMISSION;
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },
-    select: { status: true, pausedAt: true, startedAt: true, lastError: true },
+    select: {
+      status: true,
+      pausedAt: true,
+      startedAt: true,
+      lastError: true,
+      confirmedById: true,
+      confirmedBy: { select: { isActive: true } },
+    },
   });
   if (!campaign || !["READY", "SENDING"].includes(campaign.status)) {
     return { ok: false, message: "A campanha não está pronta para envio." };
   }
   if (campaign.pausedAt) {
+    // Pré-verificação informativa (evita o ciclo retomar → pausar): a autoritativa é a da reserva.
+    if (!campaign.confirmedById || !campaign.confirmedBy?.isActive) {
+      return { ok: false, message: RESUME_BLOCKED_CONFIRMER_INACTIVE };
+    }
+    const quota = await getUserQuotaSnapshot(campaign.confirmedById, getCampaignLimits().userDailyParts);
+    if (quota && quota.remaining <= 0) return { ok: false, message: resumeBlockedByQuotaMessage(quota) };
     await prisma.campaign.updateMany({
       where: { id: campaignId, status: { in: ["READY", "SENDING"] } },
       data: { pausedAt: null, pausedById: null, lastError: null, consecutiveUnknown: 0, nextStepAt: null },

@@ -13,6 +13,10 @@ import { getSmsJobQueueConfig, type SmsJobQueueConfig } from "@/lib/aws/sqs-conf
 import { prisma } from "@/lib/db/prisma";
 import { getSmsRuntimeConfig, type SmsRuntimeConfig } from "@/lib/sms/config";
 import { STALE_MS } from "./campaigns/engine";
+import { quotaUsage } from "./send-rate";
+import { getCampaignLimits } from "@/features/campaigns/limits";
+import { CONFIRMER_INACTIVE_HALT_CODE, effectiveDailyLimit, USER_QUOTA_HALT_CODE } from "@/features/rate-limit/quota";
+import { lisbonDayWindow } from "@/lib/time/lisbon";
 
 /** Amostras de latência por janela (as mais recentes): limita o custo da consulta. */
 const LATENCY_SAMPLE_LIMIT = 5_000;
@@ -25,6 +29,8 @@ export type ObservabilityDeps = {
   now: () => Date;
   runtime: SmsRuntimeConfig;
   queue: SmsJobQueueConfig;
+  /** Defeito da quota diária por utilizador (SMS_USER_DAILY_PARTS_LIMIT). */
+  userDailyParts: number;
   /** Só chamado com SMS_JOB_QUEUE=sqs (requer sqs:GetQueueAttributes). */
   readQueueAttributes?: QueueAttributesReader;
 };
@@ -36,6 +42,7 @@ export function defaultObservabilityDeps(): ObservabilityDeps {
     now: () => new Date(),
     runtime: getSmsRuntimeConfig(),
     queue,
+    userDailyParts: getCampaignLimits().userDailyParts,
     readQueueAttributes:
       queue.kind === "sqs"
         ? async (queueUrl) => {
@@ -112,6 +119,33 @@ async function queueMetrics(deps: ObservabilityDeps): Promise<QueueMetrics> {
   }
 }
 
+/** Utilizadores ativos sem quota disponível hoje (quem enviou hoje ou tem override 0). */
+async function usersExhaustedToday(deps: ObservabilityDeps, now: Date) {
+  const { start } = lisbonDayWindow(now);
+  const [senders, zeroLimit] = await Promise.all([
+    prisma.smsMessage.groupBy({ by: ["createdById"], where: { createdAt: { gte: start } } }),
+    prisma.user.findMany({ where: { isActive: true, dailyPartsLimit: 0 }, select: { id: true } }),
+  ]);
+  const ids = [...new Set([...senders.map((row) => row.createdById), ...zeroLimit.map((row) => row.id)])];
+  if (ids.length === 0) return 0;
+  const users = await prisma.user.findMany({ where: { id: { in: ids }, isActive: true }, select: { id: true, dailyPartsLimit: true } });
+  let exhausted = 0;
+  for (const user of users) {
+    const limit = effectiveDailyLimit(user.dailyPartsLimit, deps.userDailyParts);
+    if (limit - (await quotaUsage(prisma, user.id, now)) <= 0) exhausted += 1;
+  }
+  return exhausted;
+}
+
+function campaignsHaltedByQuota24h(now: Date) {
+  const since = new Date(now.getTime() - DAY_MS);
+  return Promise.all(
+    [USER_QUOTA_HALT_CODE, CONFIRMER_INACTIVE_HALT_CODE].map((code) =>
+      prisma.auditLog.count({ where: { action: "CAMPAIGN_HALTED", createdAt: { gte: since }, metadataJson: { path: ["reason"], equals: code } } }),
+    ),
+  ).then((counts) => counts.reduce((sum, count) => sum + count, 0));
+}
+
 /**
  * Snapshot das métricas operacionais a partir da base de dados (fonte de verdade partilhada
  * por todas as instâncias) e, com SQS, dos atributos da fila. Só leituras; nunca envia.
@@ -121,7 +155,7 @@ export async function collectOperationalMetrics(deps: ObservabilityDeps = defaul
   const ago = (ms: number) => new Date(now.getTime() - ms);
   const windowEntries = Object.entries(METRIC_WINDOWS) as [MetricWindow, number][];
 
-  const [windowValues, sending, paused, pausedWithError, failedOrPartial24h, stuckProcessing, unknown, awaitingReceiptOver24h, throttledBuckets, slowedRows, queue] =
+  const [windowValues, sending, paused, pausedWithError, failedOrPartial24h, stuckProcessing, unknown, awaitingReceiptOver24h, throttledBuckets, slowedRows, queue, exhausted, haltedByQuota] =
     await Promise.all([
       Promise.all(windowEntries.map(([, ms]) => sendWindow(ago(ms)))),
       prisma.campaign.count({ where: { status: "SENDING", pausedAt: null } }),
@@ -137,6 +171,8 @@ export async function collectOperationalMetrics(deps: ObservabilityDeps = defaul
       prisma.sendRateBucket.count({ where: { throttledAt: { gte: ago(METRIC_WINDOWS["15m"]) } } }),
       prisma.sendRateBucket.findMany({ where: { rateFactor: { lt: 1 } }, select: { rateFactor: true, updatedAt: true } }),
       queueMetrics(deps),
+      usersExhaustedToday(deps, now),
+      campaignsHaltedByQuota24h(now),
     ]);
 
   // O multiplicador guardado é o do último acesso: projetar a recuperação até agora.
@@ -153,6 +189,7 @@ export async function collectOperationalMetrics(deps: ObservabilityDeps = defaul
     recipients: { stuckProcessing, unknown },
     awaitingReceiptOver24h,
     rate: { bucketsThrottled15m: throttledBuckets, bucketsSlowed },
+    quota: { usersExhaustedToday: exhausted, campaignsHaltedByQuota24h: haltedByQuota },
     queue,
   };
 }

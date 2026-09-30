@@ -75,6 +75,8 @@ model User {
   mustChangePassword   Boolean           @default(false)
   passwordChangedAt    DateTime?
   lastLoginAt          DateTime?
+  /// Quota diária de partes SMS (envio individual + campanhas que confirmou). null = SMS_USER_DAILY_PARTS_LIMIT; 0 = sem envios.
+  dailyPartsLimit      Int?
   /// 2FA (TOTP): segredo cifrado (AES-256-GCM), nunca em claro.
   totpSecretEnc        String?
   totpEnabledAt        DateTime?
@@ -210,6 +212,7 @@ model SmsMessage {
   @@index([status])
   @@index([destinationPhoneE164])
   @@index([campaignId])
+  @@index([createdById, createdAt])
 }
 
 model AuditLog {
@@ -287,6 +290,8 @@ model Campaign {
   /// Backoff ao nível da campanha (ex.: throttling da AWS).
   nextStepAt           DateTime?
   consecutiveUnknown   Int                 @default(0)
+  /// Ritmo máximo desta campanha (mensagens/min). null = SMS_MAX_SENDS_PER_MINUTE; nunca acima do global (efetivo = mínimo).
+  maxSendsPerMinute    Int?
   /// Lease de processamento com dono: um único passo de cada vez por campanha.
   processingLeaseToken String?
   processingLeaseUntil DateTime?

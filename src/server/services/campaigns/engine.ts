@@ -10,7 +10,8 @@ import { consoleLogger, type Logger } from "@/lib/logging/logger";
 import { getSmsProvider } from "@/lib/sms/provider";
 import type { SmsErrorCode, SmsProvider } from "@/lib/sms/types";
 import { prismaManualSendStore } from "@/server/repositories/prisma-manual-send-store";
-import { claimNextRecipient, recordProviderThrottle, type SendRateLimits } from "../send-rate";
+import { claimNextRecipient, recordProviderThrottle, RESERVATION_TTL_MS, type SendRateLimits } from "../send-rate";
+import { campaignPaceWaitReason } from "@/features/rate-limit/quota";
 import { dispatchSms } from "../sms-dispatch";
 import { currentOrigin, originMismatch, phoneHash, type CampaignOrigin } from "./origin";
 import { SqsSmsJobQueue } from "./sqs-job-queue";
@@ -36,7 +37,7 @@ import { SqsSmsJobQueue } from "./sqs-job-queue";
  */
 export const LEASE_MS = 60_000;
 /** Um destinatário PROCESSING mais antigo do que isto é considerado abandonado (> lease). */
-export const STALE_MS = 5 * 60_000;
+export const STALE_MS = RESERVATION_TTL_MS;
 /** Resultados incertos seguidos que pausam a campanha. */
 export const MAX_CONSECUTIVE_UNKNOWN = 3;
 /** Uma confirmação nunca iniciada expira ao fim de 24 h (variáveis como data/hora podem estar obsoletas). */
@@ -81,7 +82,12 @@ function countInFlight(campaignId: string, now: Date) {
 export const IN_STEP_WAIT_MAX_MS = 2_000;
 
 function sendRateLimits(deps: Pick<EngineDeps, "limits" | "rate" | "origin">): SendRateLimits {
-  return { maxPerMinute: deps.limits.maxSendsPerMinute, rate: deps.rate, originKey: deps.origin().originationHash };
+  return {
+    maxPerMinute: deps.limits.maxSendsPerMinute,
+    rate: deps.rate,
+    originKey: deps.origin().originationHash,
+    userDailyParts: deps.limits.userDailyParts,
+  };
 }
 
 export function defaultEngineDeps(): EngineDeps {
@@ -343,6 +349,10 @@ export async function sendCampaignRecipient(job: SendSmsJob, deps: EngineDeps): 
       }
       return;
     }
+    case "rate_limited":
+      // Só ocorre com reserva no store; campanhas reservam no claim. Devolver à fila por segurança.
+      await requeue(job, { status: "PENDING", claimToken: null });
+      return;
     case "accepted":
       await updateOwned(job, { ...terminal("ACCEPTED"), messageId: outcome.messageId, errorCode: null, errorMessage: null });
       await prisma.campaign.update({ where: { id: campaign.id }, data: { consecutiveUnknown: 0 } });
@@ -683,6 +693,12 @@ export async function processCampaignStep(campaignId: string, deps: EngineDeps):
       }
 
       const claim = await claimNextRecipient({ campaignId, claimToken: randomUUID(), limits: sendRateLimits(deps), now: at });
+      if (claim.kind === "blocked") {
+        // Quota de quem confirmou esgotada ou conta desativada: pausa persistida, retoma manual.
+        await haltCampaign(campaignId, claim.message, deps, claim.code);
+        result = { state: "paused", reason: claim.message };
+        break;
+      }
       if (claim.kind === "rate_limited") {
         const budgetLeft = STEP_TIME_BUDGET_MS - (deps.now().getTime() - stepStartedAt);
         if (claim.limit === "mps" && deps.sleep && claim.retryAfterMs <= Math.min(IN_STEP_WAIT_MAX_MS, budgetLeft)) {
@@ -695,7 +711,9 @@ export async function processCampaignStep(campaignId: string, deps: EngineDeps):
           reason:
             claim.limit === "per_minute"
               ? "Limite interno de envios por minuto."
-              : `Limite de partes SMS por segundo (${claim.label ?? "origem"}).`,
+              : claim.limit === "campaign_per_minute"
+                ? campaignPaceWaitReason(claim.perMinute ?? 0)
+                : `Limite de partes SMS por segundo (${claim.label ?? "origem"}).`,
         };
         break;
       }

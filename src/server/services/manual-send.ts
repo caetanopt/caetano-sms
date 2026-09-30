@@ -11,6 +11,8 @@ import {
   type TemplateValues,
 } from "@/lib/sms/templates";
 import type { SmsErrorCode, SmsMessageType, SmsProvider } from "@/lib/sms/types";
+import { quotaBlockedMessage, USER_BLOCKED_MESSAGE } from "@/features/rate-limit/quota";
+import type { RateBlocked, SendRateLimits } from "./send-rate";
 import { dispatchSms, type AuditEntry, type DispatchStore } from "./sms-dispatch";
 
 // ---------------------------------------------------------------------------
@@ -37,10 +39,11 @@ export type ManualSendDeps = {
   getProvider: () => SmsProvider;
   logger: Logger;
   now?: () => Date;
-  /** Rate limit (por minuto + MPS por origem/país); reserva capacidade. Omitido = sem limite (testes). */
-  checkRate?: (target: { phoneE164: string; segments: number }) => Promise<
-    { ok: true } | { ok: false; retryAfterMs: number; limit: "per_minute" | "mps"; label?: string }
-  >;
+  /**
+   * Limites e quota (por minuto, MPS por origem/país, quota diária do utilizador), reservados
+   * na mesma transação que cria a mensagem. Omitido = sem limites (testes).
+   */
+  rateLimits?: SendRateLimits;
   /** Chamado quando a AWS responde THROTTLED (abranda os baldes de MPS). */
   onThrottled?: (phoneE164: string) => Promise<void>;
 };
@@ -199,6 +202,22 @@ export async function prepareManualSend(
   };
 }
 
+/** Mensagem acionável para o operador quando a reserva recusa (nunca expõe outros utilizadores). */
+export function rateLimitedMessage(check: RateBlocked): string {
+  const seconds = Math.max(1, Math.ceil(check.retryAfterMs / 1000));
+  switch (check.limit) {
+    case "per_minute":
+    case "campaign_per_minute":
+      return `Limite interno de envios por minuto atingido. Tenta novamente dentro de ${seconds} s.`;
+    case "mps":
+      return `Limite de partes SMS por segundo (${check.label ?? "origem"}) atingido. Tenta novamente dentro de ${seconds} s.`;
+    case "user_quota":
+      return quotaBlockedMessage(check.quota, check.cost);
+    case "user_blocked":
+      return USER_BLOCKED_MESSAGE;
+  }
+}
+
 /**
  * Executa um envio individual confirmado pelo operador.
  * Repete todas as validações (nunca confia no resumo mostrado ao browser) e garante
@@ -252,21 +271,6 @@ export async function executeManualSend(
     };
   }
 
-  if (deps.checkRate) {
-    const rate = await deps.checkRate({ phoneE164: preview.phoneE164, segments: preview.segments.segments });
-    if (!rate.ok) {
-      logger.log("warn", "sms.send.rate_limited", { userId: input.userId, errorCode: rate.limit });
-      const seconds = Math.max(1, Math.ceil(rate.retryAfterMs / 1000));
-      return {
-        kind: "rate_limited",
-        message:
-          rate.limit === "per_minute"
-            ? `Limite interno de envios por minuto atingido. Tenta novamente dentro de ${seconds} s.`
-            : `Limite de partes SMS por segundo (${rate.label ?? "origem"}) atingido. Tenta novamente dentro de ${seconds} s.`,
-      };
-    }
-  }
-
   const outcome = await dispatchSms(
     {
       message: {
@@ -283,6 +287,14 @@ export async function executeManualSend(
       },
       source: "manual",
       auditMetadata: { legalBasisConfirmed: input.legalBasisConfirmed },
+      reservation: deps.rateLimits
+        ? {
+            target: { phoneE164: preview.phoneE164, segments: preview.segments.segments },
+            payerId: input.userId,
+            limits: deps.rateLimits,
+            now: now(),
+          }
+        : undefined,
     },
     { store, config, provider, logger, now, onThrottled: deps.onThrottled },
   );
@@ -290,6 +302,8 @@ export async function executeManualSend(
   switch (outcome.kind) {
     case "duplicate":
       return outcome;
+    case "rate_limited":
+      return { kind: "rate_limited", message: rateLimitedMessage(outcome.check) };
     case "accepted":
       return { ...outcome, dryRun: config.mode === "TEST" };
     case "failed":

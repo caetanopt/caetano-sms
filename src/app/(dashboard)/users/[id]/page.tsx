@@ -3,7 +3,10 @@ import { notFound, redirect } from "next/navigation";
 import { resetUserMfaAction, updateUserAction } from "@/app/actions/users";
 import { Feedback } from "@/components/feedback";
 import { ResetPasswordForm } from "@/components/users/reset-password-form";
+import { getCampaignLimits } from "@/features/campaigns/limits";
+import { describeQuota } from "@/features/rate-limit/quota";
 import { ROLE_LABELS } from "@/features/users/user-form-state";
+import { getUserQuotaSnapshot } from "@/server/services/send-rate";
 import { can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
@@ -26,10 +29,21 @@ export default async function UserDetailPage({
     select: {
       id: true, name: true, email: true, role: true, isActive: true, mustChangePassword: true,
       lastLoginAt: true, passwordChangedAt: true, createdAt: true, totpEnabledAt: true, totpPendingSecretEnc: true,
+      dailyPartsLimit: true,
     },
   });
   if (!user) notFound();
   const self = user.id === actor.id;
+  // Quota diária: defeito da aplicação e uso de hoje (omitidos se a configuração for inválida).
+  let defaultDailyParts: number | null = null;
+  let quotaToday: string | null = null;
+  try {
+    defaultDailyParts = getCampaignLimits().userDailyParts;
+    const snapshot = await getUserQuotaSnapshot(user.id, defaultDailyParts);
+    if (snapshot) quotaToday = describeQuota(snapshot) + (snapshot.used > snapshot.limit ? " — acima do limite atual" : "");
+  } catch {
+    defaultDailyParts = null;
+  }
   // Ações sobre esta conta e ações feitas por ela (sem metadados: podem conter dados de contactos).
   const audit = await prisma.auditLog.findMany({
     where: { OR: [{ entityType: "User", entityId: user.id }, { userId: user.id }] },
@@ -73,8 +87,30 @@ export default async function UserDetailPage({
               <option value="false">Desativado</option>
             </select>
           </label>
+          <label className="block text-sm font-medium md:col-span-3">
+            Quota diária (partes SMS)
+            {self ? <input type="hidden" name="dailyPartsLimit" value={user.dailyPartsLimit ?? ""} /> : null}
+            <input
+              type="number"
+              name={self ? undefined : "dailyPartsLimit"}
+              min={0}
+              max={1_000_000}
+              step={1}
+              disabled={self}
+              defaultValue={user.dailyPartsLimit ?? ""}
+              placeholder={defaultDailyParts !== null ? `defeito: ${defaultDailyParts}` : "defeito da aplicação"}
+              className={`${input} md:w-64`}
+            />
+            <span className="mt-1 block text-xs font-normal text-slate-500">
+              Vazio = defeito da aplicação{defaultDailyParts !== null ? ` (${defaultDailyParts})` : ""}. 0 = sem envios, sem desativar a
+              conta. Conta envios individuais e campanhas que este utilizador confirmar (partes estimadas), incluindo em modo de
+              teste. Aplica-se de imediato.
+              {quotaToday ? ` Hoje: ${quotaToday}.` : ""}
+            </span>
+          </label>
           <p className="text-xs text-slate-500 md:col-span-2">
-            Mudar o perfil ou desativar termina de imediato as sessões abertas deste utilizador.
+            Mudar o perfil ou desativar termina de imediato as sessões abertas deste utilizador. Desativar pausa as campanhas que
+            confirmou.
           </p>
           <button className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Guardar</button>
         </form>

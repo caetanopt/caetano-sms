@@ -1,3 +1,4 @@
+import { getCampaignLimits } from "@/features/campaigns/limits";
 import { prisma } from "@/lib/db/prisma";
 
 export async function loadEditorData() {
@@ -11,5 +12,6 @@ export async function loadEditorData() {
   return {
     lists: lists.map((list) => ({ id: list.id, name: list.name, members: list._count.members })),
     templates,
+    globalMaxPerMinute: getCampaignLimits().maxSendsPerMinute,
   };
 }

@@ -6,9 +6,9 @@ import { CampaignRunner } from "@/components/campaigns/campaign-runner";
 import { ConfirmForm } from "@/components/campaigns/confirm-form";
 import { Feedback } from "@/components/feedback";
 import { TestModeBanner } from "@/components/test-mode-banner";
-import { getCampaignLimits } from "@/features/campaigns/limits";
 import { estimateMinSendSeconds, formatDuration } from "@/features/rate-limit/estimate";
 import { getSendRateConfig } from "@/features/rate-limit/rules";
+import { describeQuota } from "@/features/rate-limit/quota";
 import { campaignStatusLabel, RECIPIENT_STATUS_LABELS, SKIP_REASON_LABELS } from "@/features/campaigns/labels";
 import { can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
@@ -75,7 +75,7 @@ export default async function CampaignDetailPage({
   // ------------------------------------------------------------------ rascunho
   if (campaign.status === "DRAFT") {
     const [preview, editorData] = await Promise.all([
-      buildCampaignPreview(campaign.id),
+      buildCampaignPreview(campaign.id, canSend ? { userId: user.id } : undefined),
       canWrite ? loadEditorData() : Promise.resolve(null),
     ]);
     if (!preview) notFound();
@@ -92,7 +92,7 @@ export default async function CampaignDetailPage({
         originMps: rate.originMps,
         countryMps: rate.countryMps,
         defaultCountryMps: rate.defaultCountryMps,
-        maxPerMinute: getCampaignLimits().maxSendsPerMinute,
+        maxPerMinute: preview.pace.effective,
       }),
     )} (estimativa pelos limites internos)`;
 
@@ -112,9 +112,11 @@ export default async function CampaignDetailPage({
               messageBody: campaign.messageBody,
               messageType: campaign.messageType,
               variables: campaignVariables(campaign.variablesJson),
+              maxSendsPerMinute: campaign.maxSendsPerMinute,
             }}
             lists={editorData.lists}
             templates={editorData.templates}
+            globalMaxPerMinute={editorData.globalMaxPerMinute}
           />
         ) : null}
 
@@ -133,6 +135,23 @@ export default async function CampaignDetailPage({
                 ["Números inválidos", plan.counts.invalidPhone],
                 ["Partes SMS estimadas", plan.counts.totalSegments],
                 ["Origem", preview.origin.config.originationLabel],
+                [
+                  "Ritmo máximo",
+                  preview.pace.campaign !== null
+                    ? `${preview.pace.effective} mensagens/minuto (definido nesta campanha; global ${preview.pace.global})`
+                    : `${preview.pace.global} mensagens/minuto (limite global)`,
+                ],
+                ...(preview.quota
+                  ? [
+                      [
+                        "Quota diária de quem confirma",
+                        describeQuota(preview.quota) +
+                          (preview.quota.committedElsewhere.parts > 0
+                            ? ` · ${preview.quota.committedElsewhere.parts} reservadas noutras campanhas tuas`
+                            : ""),
+                      ] as [string, string],
+                    ]
+                  : []),
                 ["Duração mínima estimada", minDuration],
                 ["Modo", testMode ? "TESTE" : "PRODUÇÃO"],
               ]}
@@ -243,6 +262,12 @@ export default async function CampaignDetailPage({
                 requiredText={preview.requiredConfirmationText}
                 promotional={campaign.messageType === "PROMOTIONAL"}
                 eligible={plan.counts.eligible}
+                requiredParts={plan.counts.totalSegments}
+                quotaRemainingAfter={
+                  preview.quota
+                    ? Math.max(0, preview.quota.remaining - preview.quota.committedElsewhere.parts - plan.counts.totalSegments)
+                    : null
+                }
               />
             </div>
           ) : null}
@@ -326,6 +351,11 @@ export default async function CampaignDetailPage({
               ["Template", campaign.template?.name ?? "Texto livre"],
               ["Modo", campaign.mode === "TEST" ? "TESTE" : "PRODUÇÃO"],
               ["Confirmada por", `${campaign.confirmedBy?.name ?? "—"}${campaign.confirmedAt ? ` em ${formatLisbon(campaign.confirmedAt)}` : ""}`],
+              [
+                "Ritmo máximo",
+                campaign.maxSendsPerMinute !== null ? `${campaign.maxSendsPerMinute} mensagens/minuto (definido nesta campanha)` : "limite global",
+              ],
+              ["Quota diária debitada a", campaign.confirmedBy?.name ?? "—"],
               ["Início", campaign.startedAt ? formatLisbon(campaign.startedAt) : "—"],
               ["Fim", campaign.finishedAt ? formatLisbon(campaign.finishedAt) : "—"],
               [

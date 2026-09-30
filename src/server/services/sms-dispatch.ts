@@ -3,6 +3,7 @@ import { maskPhoneNumber } from "@/lib/phone/normalize";
 import type { SmsRuntimeConfig } from "@/lib/sms/config";
 import type { SmsSegmentInfo } from "@/lib/sms/encoding";
 import type { SmsErrorCode, SmsMessageType, SmsProvider, SmsSendResult } from "@/lib/sms/types";
+import type { CapacityReservation, RateBlocked } from "./send-rate";
 
 /**
  * Núcleo comum de envio (envio individual e campanhas): cria o SmsMessage PENDING
@@ -46,10 +47,20 @@ export type MessageOutcomeUpdate =
       failedAt: Date | null;
     };
 
+export type CreatePendingResult =
+  | { kind: "created"; id: string }
+  /** Já existe uma mensagem com a mesma chave de idempotência. */
+  | { kind: "duplicate" }
+  /** A reserva de capacidade/quota recusou: nada foi gravado. */
+  | { kind: "rate_limited"; check: RateBlocked };
+
 export interface DispatchStore {
   findMessageByIdempotencyKey(key: string): Promise<{ id: string; status: string } | null>;
-  /** Devolve null se já existir uma mensagem com a mesma chave de idempotência. */
-  createPendingMessage(data: PendingMessageData): Promise<{ id: string } | null>;
+  /**
+   * Cria o SmsMessage PENDING. Com `reservation`, a reserva de capacidade e quota e o INSERT
+   * são uma só transação sob o lock de rate limit (dois pedidos simultâneos nunca passam ambos).
+   */
+  createPendingMessage(data: PendingMessageData, reservation?: CapacityReservation): Promise<CreatePendingResult>;
   /** `audit` null: não regista auditoria por mensagem (campanhas auditam ao nível da campanha). */
   completeMessage(id: string, update: MessageOutcomeUpdate, audit: AuditEntry | null): Promise<void>;
   /** Adiciona o número à suppression list e marca o contacto (se existir) em opt-out. */
@@ -74,10 +85,13 @@ export type DispatchInput = {
   /** Metadados extra da auditoria por mensagem; null desativa a auditoria por mensagem. */
   auditMetadata: AuditEntry["metadata"] | null;
   logFields?: Pick<LogFields, "campaignId">;
+  /** Envio individual: limites e quota aplicados atomicamente com a criação da mensagem. */
+  reservation?: CapacityReservation;
 };
 
 export type DispatchOutcome =
   | { kind: "duplicate"; messageId: string; status: string }
+  | { kind: "rate_limited"; check: RateBlocked }
   | { kind: "accepted"; messageId: string; providerMessageId: string }
   | { kind: "failed"; messageId: string; errorCode: SmsErrorCode; message: string; retryable: boolean }
   | { kind: "uncertain"; messageId: string; errorCode: SmsErrorCode; message: string };
@@ -88,8 +102,12 @@ export async function dispatchSms(input: DispatchInput, deps: DispatchDeps): Pro
   const dryRun = config.mode === "TEST";
   const maskedDestination = maskPhoneNumber(message.destinationPhoneE164);
 
-  const created = await store.createPendingMessage({ ...message, provider: config.provider, dryRun });
-  if (!created) {
+  const created = await store.createPendingMessage({ ...message, provider: config.provider, dryRun }, input.reservation);
+  if (created.kind === "rate_limited") {
+    logger.log("warn", "sms.send.rate_limited", { ...input.logFields, userId: message.createdById, errorCode: created.check.limit });
+    return { kind: "rate_limited", check: created.check };
+  }
+  if (created.kind === "duplicate") {
     const existing = await store.findMessageByIdempotencyKey(message.idempotencyKey);
     logger.log("info", "sms.send.duplicate", {
       ...input.logFields,

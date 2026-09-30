@@ -140,3 +140,32 @@ describe("password reset and change", () => {
     expect(await attemptLogin({ email: "operator@test.local", password: "uma frase bem longa", ip: null })).toMatchObject({ ok: true });
   }, 30_000);
 });
+
+describe("daily quota override", () => {
+  it("is admin-only, never on yourself, audited and applied without ending sessions", async () => {
+    await loginAs(actors.viewer.id);
+    const base = { name: "VIEWER", role: "VIEWER" as const, isActive: true };
+    expect(await updateUser(actors.operator, actors.viewer.id, { ...base, dailyPartsLimit: 50 })).toMatchObject({ ok: false });
+    expect(await updateUser(actors.admin, actors.viewer.id, { ...base, dailyPartsLimit: 50 })).toMatchObject({ ok: true });
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: actors.viewer.id } })).dailyPartsLimit).toBe(50);
+    expect(await prisma.auditLog.findFirst({ where: { action: "USER_QUOTA_CHANGED", entityId: actors.viewer.id } })).toMatchObject({
+      userId: actors.admin.id,
+      metadataJson: { from: null, to: 50 },
+    });
+    // A quota é lida na base de dados a cada reserva: a sessão continua válida.
+    expect(await getCurrentUser()).toMatchObject({ id: actors.viewer.id });
+
+    expect(await updateUser(actors.admin, actors.viewer.id, { ...base, dailyPartsLimit: 0 })).toMatchObject({ ok: true });
+    expect(await updateUser(actors.admin, actors.viewer.id, { ...base, dailyPartsLimit: null })).toMatchObject({ ok: true });
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: actors.viewer.id } })).dailyPartsLimit).toBeNull();
+    expect(await prisma.auditLog.count({ where: { action: "USER_QUOTA_CHANGED", entityId: actors.viewer.id } })).toBe(3);
+    // Omitido = inalterado (sem auditoria nova).
+    expect(await updateUser(actors.admin, actors.viewer.id, { ...base, name: "Leitor" })).toMatchObject({ ok: true });
+    expect(await prisma.auditLog.count({ where: { action: "USER_QUOTA_CHANGED", entityId: actors.viewer.id } })).toBe(3);
+
+    expect(await updateUser(actors.admin, actors.admin.id, { name: "ADMIN", role: "ADMIN", isActive: true, dailyPartsLimit: 10 })).toMatchObject({
+      ok: false,
+      message: expect.stringMatching(/pede a outro administrador/),
+    });
+  });
+});

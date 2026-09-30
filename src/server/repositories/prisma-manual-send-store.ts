@@ -1,6 +1,15 @@
 import { ConsentStatus, Prisma, SmsMessageStatus } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import type { AuditEntry, ManualSendStore } from "@/server/services/manual-send";
+import { reserveInTransaction, type RateBlocked } from "@/server/services/send-rate";
+
+/** Interrompe a transação de criação quando a reserva recusa (nada fica gravado). */
+class RateLimitedSignal extends Error {
+  constructor(readonly check: RateBlocked) {
+    super("rate_limited");
+    this.name = "RateLimitedSignal";
+  }
+}
 
 function auditData(entry: AuditEntry) {
   return {
@@ -39,17 +48,26 @@ export const prismaManualSendStore: ManualSendStore = {
     });
   },
 
-  async createPendingMessage(data) {
+  async createPendingMessage(data, reservation) {
     try {
-      return await prisma.smsMessage.create({
-        data: { ...data, status: SmsMessageStatus.PENDING },
-        select: { id: true },
-      });
-    } catch (error) {
-      // P2002: violação da constraint única de idempotencyKey (pedido concorrente).
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-        return null;
+      if (!reservation) {
+        const row = await prisma.smsMessage.create({ data: { ...data, status: SmsMessageStatus.PENDING }, select: { id: true } });
+        return { kind: "created", id: row.id };
       }
+      const row = await prisma.$transaction(async (tx) => {
+        const check = await reserveInTransaction(tx, reservation.target, reservation.payerId, reservation.limits, reservation.now);
+        if (!check.ok) throw new RateLimitedSignal(check);
+        // createdAt explícito: a fronteira do dia e a contagem usam o mesmo relógio da reserva.
+        return tx.smsMessage.create({
+          data: { ...data, status: SmsMessageStatus.PENDING, createdAt: reservation.now },
+          select: { id: true },
+        });
+      });
+      return { kind: "created", id: row.id };
+    } catch (error) {
+      if (error instanceof RateLimitedSignal) return { kind: "rate_limited", check: error.check };
+      // P2002: violação da constraint única de idempotencyKey (pedido concorrente).
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") return { kind: "duplicate" };
       throw error;
     }
   },

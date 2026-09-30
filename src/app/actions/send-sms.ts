@@ -7,7 +7,7 @@ import {
   type SendFormValues,
 } from "@/features/messages/send-form-state";
 import { requireUser } from "@/lib/auth/session";
-import { getCampaignLimits } from "@/features/campaigns/limits";
+import { getCampaignLimits, type CampaignLimits } from "@/features/campaigns/limits";
 import { consoleLogger } from "@/lib/logging/logger";
 import { MANUAL_VARIABLES, type TemplateValues } from "@/lib/sms/templates";
 import { getSmsRuntimeConfig } from "@/lib/sms/config";
@@ -15,7 +15,8 @@ import { getSmsProvider } from "@/lib/sms/provider";
 import { prismaManualSendStore } from "@/server/repositories/prisma-manual-send-store";
 import { getSendRateConfig } from "@/features/rate-limit/rules";
 import { currentOrigin } from "@/server/services/campaigns/origin";
-import { recordProviderThrottle, reserveSendCapacity } from "@/server/services/send-rate";
+import { getUserQuotaSnapshot, recordProviderThrottle } from "@/server/services/send-rate";
+import { quotaAllows, quotaBlockedMessage, USER_BLOCKED_MESSAGE } from "@/features/rate-limit/quota";
 import {
   executeManualSend,
   prepareManualSend,
@@ -55,20 +56,25 @@ function readVariables(formData: FormData): TemplateValues {
   return values;
 }
 
-function buildDeps(): ManualSendDeps | null {
+function buildDeps(): { deps: ManualSendDeps; limits: CampaignLimits } | null {
   try {
-    const limits = {
-      maxPerMinute: getCampaignLimits().maxSendsPerMinute,
+    const limits = getCampaignLimits();
+    const rateLimits = {
+      maxPerMinute: limits.maxSendsPerMinute,
       rate: getSendRateConfig(),
       originKey: currentOrigin().originationHash,
+      userDailyParts: limits.userDailyParts,
     };
     return {
-      store: prismaManualSendStore,
-      config: getSmsRuntimeConfig(),
-      getProvider: () => getSmsProvider(),
-      logger: consoleLogger,
-      checkRate: (target) => reserveSendCapacity(target, limits),
-      onThrottled: (phoneE164) => recordProviderThrottle({ phoneE164 }, limits),
+      limits,
+      deps: {
+        store: prismaManualSendStore,
+        config: getSmsRuntimeConfig(),
+        getProvider: () => getSmsProvider(),
+        logger: consoleLogger,
+        rateLimits,
+        onThrottled: (phoneE164) => recordProviderThrottle({ phoneE164 }, rateLimits),
+      },
     };
   } catch {
     return null;
@@ -96,8 +102,9 @@ export async function sendSmsFormAction(
     return editState(typeIssue ? "Seleciona o tipo de mensagem." : "Revê os dados do formulário.");
   }
 
-  const deps = buildDeps();
-  if (!deps) return editState(CONFIG_ERROR);
+  const built = buildDeps();
+  if (!built) return editState(CONFIG_ERROR);
+  const { deps, limits } = built;
 
   const input = {
     requestId,
@@ -114,6 +121,10 @@ export async function sendSmsFormAction(
     const prepared = await prepareManualSend(input, deps);
     if (!prepared.ok) return editState(prepared.message);
     const { preview } = prepared;
+    // Pré-verificação informativa da quota (a autoritativa acontece na reserva, ao confirmar).
+    const quota = await getUserQuotaSnapshot(user.id, limits.userDailyParts);
+    if (!quota || !quota.active) return editState(USER_BLOCKED_MESSAGE);
+    if (!quotaAllows(quota, preview.segments.segments)) return editState(quotaBlockedMessage(quota, preview.segments.segments));
     return {
       step: "review",
       requestId,
@@ -129,6 +140,7 @@ export async function sendSmsFormAction(
         mode: preview.mode,
         originationLabel: preview.originationLabel,
         legalBasisConfirmed: preview.legalBasisConfirmed,
+        quota: { used: quota.used, limit: quota.limit, remaining: quota.remaining, afterSend: quota.remaining - preview.segments.segments },
       },
     };
   }

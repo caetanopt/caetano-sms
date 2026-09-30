@@ -111,6 +111,8 @@ export type OperationalMetrics = {
   /** Aceites pela AWS há mais de 24 h sem recibo final (só relevante com eventos configurados). */
   awaitingReceiptOver24h: number;
   rate: { bucketsThrottled15m: number; bucketsSlowed: number };
+  /** Quotas por utilizador (CLAUDE.md §19): esgotadas hoje e campanhas pausadas por quota/conta desativada. */
+  quota: { usersExhaustedToday: number; campaignsHaltedByQuota24h: number };
   queue: QueueMetrics;
 };
 
@@ -168,6 +170,12 @@ export function toPrometheus(metrics: OperationalMetrics): string {
   w.gauge("sms_awaiting_receipt_over_24h", "Aceites há mais de 24 h sem recibo de entrega final.", metrics.awaitingReceiptOver24h);
   w.gauge("sms_rate_buckets_throttled_15m", "Baldes de MPS com THROTTLED nos últimos 15 min.", metrics.rate.bucketsThrottled15m);
   w.gauge("sms_rate_buckets_slowed", "Baldes de MPS com ritmo reduzido após throttling.", metrics.rate.bucketsSlowed);
+  w.gauge("sms_quota_users_exhausted_today", "Utilizadores cuja quota diária de partes SMS está esgotada.", metrics.quota.usersExhaustedToday);
+  w.gauge(
+    "sms_campaigns_halted_by_quota_24h",
+    "Campanhas pausadas por quota ou confirmador desativado nas últimas 24 h.",
+    metrics.quota.campaignsHaltedByQuota24h,
+  );
   if (metrics.queue.kind === "sqs") {
     w.gauge("sms_queue_up", "Leitura dos atributos da fila SQS (1 = OK).", metrics.queue.up ? 1 : 0);
     if (metrics.queue.up) {
@@ -194,6 +202,8 @@ export function toEmf(metrics: OperationalMetrics, namespace: string): Record<st
     CampaignsPausedWithError: metrics.campaigns.pausedWithError,
     RecipientsStuck: metrics.recipients.stuckProcessing,
     AwaitingReceiptOver24h: metrics.awaitingReceiptOver24h,
+    UsersQuotaExhaustedToday: metrics.quota.usersExhaustedToday,
+    CampaignsHaltedByQuota24h: metrics.quota.campaignsHaltedByQuota24h,
   };
   if (w.latencyMs.p95 !== null) values.ProviderLatencyP95Ms = w.latencyMs.p95;
   if (metrics.queue.kind === "sqs" && metrics.queue.up) {
@@ -245,6 +255,15 @@ export function alertsFor(metrics: OperationalMetrics, options: { deliveryEvents
   }
   if (options.deliveryEventsConfigured && metrics.awaitingReceiptOver24h > 0) {
     alerts.push({ level: "warning", message: `${metrics.awaitingReceiptOver24h} mensagem(ns) aceites há mais de 24 h sem recibo de entrega.` });
+  }
+  if (metrics.quota.usersExhaustedToday > 0) {
+    alerts.push({ level: "warning", message: `${metrics.quota.usersExhaustedToday} utilizador(es) com a quota diária de SMS esgotada.` });
+  }
+  if (metrics.quota.campaignsHaltedByQuota24h > 0) {
+    alerts.push({
+      level: "warning",
+      message: `${metrics.quota.campaignsHaltedByQuota24h} campanha(s) pausada(s) por quota ou conta desativada nas últimas 24 h (retoma manual ou ajuste da quota).`,
+    });
   }
   if (metrics.queue.kind === "sqs") {
     if (!metrics.queue.up) alerts.push({ level: "critical", message: "Não foi possível ler a fila SQS (permissões ou rede)." });

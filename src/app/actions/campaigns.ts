@@ -39,6 +39,9 @@ const draftSchema = z.object({
   templateId: z.string().max(40),
   messageBody: z.string().max(1530, "Mensagem demasiado longa."),
   messageType: z.enum(["TRANSACTIONAL", "PROMOTIONAL"], { error: "Seleciona o tipo de mensagem." }),
+  maxSendsPerMinute: z.union([z.literal(""), z.coerce.number().int().min(1).max(10_000)], {
+    error: "Ritmo máximo: inteiro entre 1 e 10000 mensagens por minuto, ou vazio para usar o limite global.",
+  }),
 });
 
 function readVariables(formData: FormData): TemplateValues {
@@ -58,10 +61,16 @@ export async function saveCampaignDraftAction(_previous: CampaignFormState, form
     templateId: formData.get("templateId") ?? "",
     messageBody: formData.get("messageBody") ?? "",
     messageType: formData.get("messageType"),
+    maxSendsPerMinute: String(formData.get("maxSendsPerMinute") ?? "").trim(),
   });
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Dados inválidos." };
 
-  const input = { ...parsed.data, templateId: parsed.data.templateId || null, variables: readVariables(formData) };
+  const input = {
+    ...parsed.data,
+    templateId: parsed.data.templateId || null,
+    variables: readVariables(formData),
+    maxSendsPerMinute: parsed.data.maxSendsPerMinute === "" ? null : parsed.data.maxSendsPerMinute,
+  };
   const campaignId = formData.get("campaignId");
   if (typeof campaignId === "string" && campaignId !== "") {
     if (!idSchema.safeParse(campaignId).success) return { error: "Pedido inválido." };

@@ -21,6 +21,7 @@ function snapshot(overrides: Partial<OperationalMetrics> = {}): OperationalMetri
     recipients: { stuckProcessing: 0, unknown: 0 },
     awaitingReceiptOver24h: 0,
     rate: { bucketsThrottled15m: 0, bucketsSlowed: 0 },
+    quota: { usersExhaustedToday: 0, campaignsHaltedByQuota24h: 0 },
     queue: { kind: "direct" },
     ...overrides,
   };
