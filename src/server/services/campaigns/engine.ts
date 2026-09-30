@@ -3,7 +3,7 @@ import { isValidPhoneNumber } from "libphonenumber-js";
 import { getCampaignLimits, type CampaignLimits } from "@/features/campaigns/limits";
 import { getSendRateConfig, type SendRateConfig } from "@/features/rate-limit/rules";
 import { getSmsJobQueueConfig, type SmsJobQueueConfig } from "@/lib/aws/sqs-config";
-import { finalCampaignStatus, retryDelayMs, EMPTY_RECIPIENT_COUNTS } from "@/features/campaigns/processing-rules";
+import { campaignIdempotencyKey, finalCampaignStatus, retryDelayMs, EMPTY_RECIPIENT_COUNTS } from "@/features/campaigns/processing-rules";
 import { prisma } from "@/lib/db/prisma";
 import { getSmsSegmentInfo } from "@/lib/sms/encoding";
 import { consoleLogger, type Logger } from "@/lib/logging/logger";
@@ -109,9 +109,7 @@ export function jobQueueFromConfig(config: SmsJobQueueConfig): SmsJobQueue | und
   return config.kind === "sqs" ? new SqsSmsJobQueue(config) : undefined;
 }
 
-export function idempotencyKeyFor(campaignId: string, recipientId: string, attempt: number) {
-  return `campaign:${campaignId}:${recipientId}:${attempt}`;
-}
+export const idempotencyKeyFor = campaignIdempotencyKey;
 
 // ---------------------------------------------------------------------------
 // Fila (CLAUDE.md §17): o domínio depende só da interface.

@@ -45,3 +45,8 @@ export function finalCampaignStatus(counts: RecipientStatusCounts): "COMPLETED" 
   if (counts.ACCEPTED === 0) return "FAILED";
   return counts.FAILED + counts.UNKNOWN === 0 ? "COMPLETED" : "PARTIAL";
 }
+
+/** Chave de idempotência de uma tentativa de envio de campanha (única por destinatário e tentativa). */
+export function campaignIdempotencyKey(campaignId: string, recipientId: string, attempt: number) {
+  return `campaign:${campaignId}:${recipientId}:${attempt}`;
+}

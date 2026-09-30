@@ -11,6 +11,7 @@ import {
   userQuotaHaltMessage,
   type QuotaState,
 } from "@/features/rate-limit/quota";
+import { campaignIdempotencyKey } from "@/features/campaigns/processing-rules";
 import { bucketsFor, type SendRateConfig } from "@/features/rate-limit/rules";
 import { initialBucket, penalize, tryConsume, type BucketState } from "@/features/rate-limit/token-bucket";
 import { prisma } from "@/lib/db/prisma";
@@ -104,22 +105,37 @@ function toState(row: BucketRow | undefined, fallback: () => BucketState): Bucke
 export async function quotaUsage(db: Tx, payerId: string, now: Date): Promise<number> {
   const { start } = lisbonDayWindow(now);
   const notSent = { status: "FAILED" as const, errorCode: { in: [...NOT_SENT_ERROR_CODES] } };
-  const [sum, withoutEstimate, reserved] = await Promise.all([
+  const [sum, withoutEstimate, reservations] = await Promise.all([
     db.smsMessage.aggregate({
       _sum: { segmentCountEstimate: true },
       where: { createdById: payerId, createdAt: { gte: start }, NOT: notSent },
     }),
     db.smsMessage.count({ where: { createdById: payerId, createdAt: { gte: start }, segmentCountEstimate: null, NOT: notSent } }),
-    db.campaignRecipient.aggregate({
-      _sum: { segments: true },
+    // Reservas recentes (no máximo SMS_SQS_MAX_IN_FLIGHT/lote por campanha: conjunto pequeno).
+    db.campaignRecipient.findMany({
       where: {
         status: "PROCESSING",
         claimedAt: { gte: new Date(Math.max(start.getTime(), now.getTime() - RESERVATION_TTL_MS)) },
         campaign: { confirmedById: payerId },
       },
+      select: { id: true, campaignId: true, attempt: true, segments: true },
     }),
   ]);
-  return (sum._sum.segmentCountEstimate ?? 0) + withoutEstimate + (reserved._sum.segments ?? 0);
+  // Uma reserva cujo SmsMessage desta tentativa já existe está contada acima: não contar duas
+  // vezes (com a fila SQS o passo reserva enquanto o worker envia).
+  const keys = reservations.map((r) => campaignIdempotencyKey(r.campaignId, r.id, r.attempt));
+  const alreadyCreated = keys.length
+    ? new Set(
+        (await db.smsMessage.findMany({ where: { idempotencyKey: { in: keys } }, select: { idempotencyKey: true } })).map(
+          (m) => m.idempotencyKey,
+        ),
+      )
+    : new Set<string>();
+  const reserved = reservations.reduce(
+    (total, r, i) => total + (alreadyCreated.has(keys[i]) ? 0 : (r.segments ?? 0)),
+    0,
+  );
+  return (sum._sum.segmentCountEstimate ?? 0) + withoutEstimate + reserved;
 }
 
 /** Verificação autoritativa do pagador (dentro da transação com o lock). */

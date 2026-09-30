@@ -213,6 +213,38 @@ describe("daily quota (prismaManualSendStore.createPendingMessage)", () => {
     expect(await prismaManualSendStore.createPendingMessage(pending(actors.operator.id), reservation(actors.operator.id, 1, at))).toMatchObject({ kind: "created" });
   });
 
+  it("an in-flight reservation whose message already exists counts once (SQS: step reserves while the worker sends)", async () => {
+    await prisma.user.update({ where: { id: actors.operator.id }, data: { dailyPartsLimit: 2 } });
+    const campaign = await prisma.campaign.create({
+      data: { name: "C", messageType: "TRANSACTIONAL", messageBody: "x", status: "SENDING", createdById: actors.admin.id, confirmedById: actors.operator.id },
+    });
+    const at = now();
+    const recipient = await prisma.campaignRecipient.create({
+      data: { campaignId: campaign.id, status: "PROCESSING", segments: 1, attempt: 1, claimToken: "a", claimedAt: at },
+    });
+    // O worker já criou o SmsMessage da tentativa 1, mas o destinatário continua PROCESSING.
+    await prisma.smsMessage.create({
+      data: {
+        idempotencyKey: `campaign:${campaign.id}:${recipient.id}:1`,
+        destinationPhoneE164: PT,
+        messageType: "TRANSACTIONAL",
+        body: "x",
+        provider: "fake",
+        status: "PENDING",
+        segmentCountEstimate: 1,
+        campaignId: campaign.id,
+        createdById: actors.operator.id,
+        createdAt: at,
+      },
+    });
+    // Usado = 1 (não 2): ainda cabe 1 parte.
+    expect(await prismaManualSendStore.createPendingMessage(pending(actors.operator.id), reservation(actors.operator.id, 1, at))).toMatchObject({ kind: "created" });
+    expect(await prismaManualSendStore.createPendingMessage(pending(actors.operator.id), reservation(actors.operator.id, 1, at))).toMatchObject({
+      kind: "rate_limited",
+      check: { limit: "user_quota", quota: { used: 2 } },
+    });
+  });
+
   it("resets at 00:00 Lisbon, in summer and winter", async () => {
     await prisma.user.update({ where: { id: actors.operator.id }, data: { dailyPartsLimit: 1 } });
     const summerBefore = new Date("2026-07-01T22:59:50Z");
