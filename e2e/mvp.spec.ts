@@ -70,9 +70,13 @@ test("login, contactos, lista e template", async ({ page }) => {
   await page.waitForURL(/\/lists\/[a-z0-9]+/);
   const phones = ["912345678", "913456789", "914567890", "915678901"];
   for (const [index, phone] of phones.entries()) {
-    await page.fill("main form input[name=phone]", phone);
-    await page.getByRole("button", { name: "Adicionar" }).click();
-    await expect(page.locator("main table tbody tr")).toHaveCount(index + 1);
+    // O React repõe o formulário quando a ação anterior termina; se isso acontecer depois do
+    // preenchimento, o campo fica vazio. Repetir é seguro: adicionar um membro é idempotente.
+    await expect(async () => {
+      await page.fill("main form input[name=phone]", phone);
+      await page.getByRole("button", { name: "Adicionar" }).click();
+      await expect(page.locator("main table tbody tr")).toHaveCount(index + 1, { timeout: 2000 });
+    }).toPass({ timeout: 15000 });
     await page.waitForLoadState("networkidle");
   }
 

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Feedback } from "@/components/feedback";
+import { StatusPill } from "@/components/status-pill";
 import { CreateUserForm } from "@/components/users/create-user-form";
 import { ROLE_LABELS } from "@/features/users/user-form-state";
 import { can } from "@/lib/auth/permissions";
@@ -69,13 +70,23 @@ export default async function UsersPage({
                 <td className="px-4 py-3">{ROLE_LABELS[row.role]}</td>
                 <td className="px-4 py-3">
                   {row.isActive ? (
-                    row.mustChangePassword ? <span className="text-amber-700">Palavra-passe temporária</span> : "Ativo"
+                    row.mustChangePassword ? (
+                      <StatusPill tone="warn">Palavra-passe temporária</StatusPill>
+                    ) : (
+                      <StatusPill tone="ok">Ativo</StatusPill>
+                    )
                   ) : (
-                    <span className="text-slate-500">Desativado</span>
+                    <StatusPill tone="muted">Desativado</StatusPill>
                   )}
                 </td>
                 <td className="px-4 py-3">
-                  {row.totpEnabledAt ? "Ativo" : row.role === "ADMIN" ? <span className="text-amber-700">Por configurar</span> : "—"}
+                  {row.totpEnabledAt ? (
+                    <StatusPill tone="ok">Ativo</StatusPill>
+                  ) : row.role === "ADMIN" ? (
+                    <StatusPill tone="warn">Por configurar</StatusPill>
+                  ) : (
+                    "—"
+                  )}
                 </td>
                 <td className="px-4 py-3">{row.dailyPartsLimit ?? "defeito"}</td>
                 <td className="px-4 py-3 text-slate-500">{dateTime(row.lastLoginAt)}</td>

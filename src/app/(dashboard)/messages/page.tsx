@@ -103,50 +103,56 @@ export default async function MessagesPage({
         <table className="w-full text-left text-sm">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
-              <th className="px-4 py-3">Data/hora</th>
-              <th className="px-4 py-3">Contacto</th>
-              <th className="px-4 py-3">Telefone</th>
-              <th className="px-4 py-3">Tipo</th>
-              <th className="px-4 py-3">Campanha</th>
-              <th className="px-4 py-3">Partes</th>
-              <th className="px-4 py-3">Estado</th>
-              <th className="px-4 py-3">AWS Message ID</th>
-              <th className="px-4 py-3">Operador</th>
+              <th className="px-3 py-3">Data/hora</th>
+              <th className="px-3 py-3">Contacto</th>
+              <th className="px-3 py-3">Telefone</th>
+              <th className="px-3 py-3">Tipo</th>
+              <th className="px-3 py-3">Campanha</th>
+              <th className="px-3 py-3">Partes</th>
+              <th className="px-3 py-3">Estado</th>
+              <th className="px-3 py-3">AWS Message ID</th>
+              <th className="px-3 py-3">Operador</th>
             </tr>
           </thead>
           <tbody>
             {messages.map((message) => (
               <tr key={message.id} className="border-t border-slate-100 align-top">
-                <td className="px-4 py-3 whitespace-nowrap">{formatLisbon(message.createdAt)}</td>
-                <td className="px-4 py-3">
+                <td className="px-3 py-3 whitespace-nowrap">{formatLisbon(message.createdAt)}</td>
+                <td className="px-3 py-3">
                   {message.contact ? (
                     <Link href={`/contacts/${message.contact.id}`} className="hover:underline">{message.contact.name}</Link>
                   ) : (
                     <span className="text-slate-400">—</span>
                   )}
                 </td>
-                <td className="px-4 py-3 whitespace-nowrap">{maskPhoneNumber(message.destinationPhoneE164)}</td>
-                <td className="px-4 py-3">
+                <td className="px-3 py-3 whitespace-nowrap">{maskPhoneNumber(message.destinationPhoneE164)}</td>
+                <td className="px-3 py-3">
                   {message.messageType === "PROMOTIONAL" ? "Promocional" : "Transacional"}
                   {message.template ? <div className="text-xs text-slate-500">{message.template.name}</div> : null}
                 </td>
-                <td className="px-4 py-3">
+                <td className="px-3 py-3">
                   {message.campaign ? (
                     <Link href={`/campaigns/${message.campaign.id}`} className="hover:underline">{message.campaign.name}</Link>
                   ) : (
                     <span className="text-slate-400">Individual</span>
                   )}
                 </td>
-                <td className="px-4 py-3">{message.segmentCountEstimate ?? "—"}</td>
-                <td className="px-4 py-3">
+                <td className="px-3 py-3">{message.segmentCountEstimate ?? "—"}</td>
+                <td className="px-3 py-3">
                   <span className="font-medium">{smsStatusLabel(message.status)}</span>
                   {message.dryRun ? (
                     <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-900">TESTE</span>
                   ) : null}
                   {message.errorCode ? <div className="text-xs text-red-700">{message.errorCode}</div> : null}
                 </td>
-                <td className="px-4 py-3 font-mono text-xs break-all">{message.awsMessageId ?? "—"}</td>
-                <td className="px-4 py-3">{message.createdBy.name}</td>
+                <td className="px-3 py-3 font-mono text-xs">
+                  {message.awsMessageId ? (
+                    <span title={message.awsMessageId} className="block max-w-[6.5rem] select-all truncate">{message.awsMessageId}</span>
+                  ) : (
+                    "—"
+                  )}
+                </td>
+                <td className="px-3 py-3">{message.createdBy.name}</td>
               </tr>
             ))}
             {messages.length === 0 ? (
