@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { logoutAction } from "@/app/actions/auth";
+import { AuthLayout } from "@/components/auth-layout";
 import { ChangePasswordForm } from "@/components/users/change-password-form";
 import { MIN_PASSWORD_LENGTH } from "@/features/auth/password-policy";
 import { requireUser } from "@/lib/auth/session";
@@ -14,11 +15,7 @@ export default async function ChangePasswordPage({
   const { success } = await searchParams;
 
   return (
-    <main className="min-h-screen grid place-items-center p-6">
-      <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
-        <p className="text-sm font-semibold text-indigo-600">SMS AWS</p>
-        <h1 className="mt-2 text-2xl font-bold">Alterar palavra-passe</h1>
-        <p className="mt-2 text-sm text-slate-600">{user.name} · {user.email}</p>
+    <AuthLayout title="Alterar palavra-passe" subtitle={`${user.name} · ${user.email}`}>
         {user.mustChangePassword ? (
           <div role="alert" className="mt-5 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
             Estás a usar uma palavra-passe temporária. Define uma nova para continuar.
@@ -36,7 +33,6 @@ export default async function ChangePasswordPage({
             <button className="text-slate-600 hover:underline">Sair</button>
           </form>
         </div>
-      </div>
-    </main>
+    </AuthLayout>
   );
 }

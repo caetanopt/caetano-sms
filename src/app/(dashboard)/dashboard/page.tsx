@@ -8,7 +8,7 @@ import { getSmsRuntimeConfig } from "@/lib/sms/config";
 import { formatLisbon, lisbonDayKey, startOfLisbonDay } from "@/lib/time/lisbon";
 
 export default async function DashboardPage() {
-  await requireUser();
+  const user = await requireUser();
   const today = lisbonDayKey(new Date());
   const dayStart = startOfLisbonDay(today)!;
   const monthStart = startOfLisbonDay(`${today.slice(0, 8)}01`)!;
@@ -56,6 +56,21 @@ export default async function DashboardPage() {
     mode = null;
   }
 
+  // Acento por categoria (cores secundárias da marca, §04.1).
+  const ACCENT: Record<string, string> = {
+    "SMS enviados hoje": "from-brand-cyan to-brand-cyan-60",
+    "SMS enviados no mês": "from-brand-deep to-brand-deep-60",
+    "Aceites pela AWS (mês)": "from-brand-cyan to-brand-deep-80",
+    "Entregues (mês)": "from-brand-eco to-emerald-200",
+    "Falhados (mês)": "from-red-500 to-red-300",
+    "Pendentes / incertos (mês)": "from-brand-orange to-amber-200",
+    "Envios de teste (mês)": "from-brand-yellow to-amber-100",
+    Contactos: "from-brand-deep-80 to-brand-deep-20",
+    "Contactos em opt-out": "from-brand-grey to-slate-200",
+  };
+  const hour = Number(new Intl.DateTimeFormat("pt-PT", { timeZone: "Europe/Lisbon", hour: "numeric", hourCycle: "h23" }).format(new Date()));
+  const greeting = hour < 12 ? "Bom dia" : hour < 20 ? "Boa tarde" : "Boa noite";
+
   const cards: Array<[string, number, string?]> = [
     ["SMS enviados hoje", sentToday, "Aceites ou posteriores; sem testes"],
     ["SMS enviados no mês", sentMonth, "Aceites ou posteriores; sem testes"],
@@ -70,12 +85,17 @@ export default async function DashboardPage() {
 
   return (
     <div>
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold">Dashboard</h1>
-          <p className="mt-2 text-slate-600">Visão geral da operação de SMS (mês corrente, hora de Lisboa).</p>
+      <div className="relative overflow-hidden rounded-3xl bg-brand-deep px-8 py-9 text-white shadow-[0_30px_60px_-30px_rgb(0_46_93/0.7)]">
+        <div aria-hidden="true" className="absolute -right-16 -top-24 h-72 w-72 rounded-full bg-brand-cyan/30 blur-3xl animate-float" />
+        <div aria-hidden="true" className="absolute inset-0 bg-[linear-gradient(115deg,transparent_40%,rgb(0_174_239/0.18)_70%,transparent_90%)]" />
+        <div className="relative flex flex-wrap items-end justify-between gap-6">
+          <div>
+            <p className="text-sm font-medium text-brand-cyan-60">{greeting}, {user.name.split(" ")[0]}</p>
+            <h1 className="mt-1 text-3xl font-bold text-white sm:text-4xl">Dashboard</h1>
+            <p className="mt-2 max-w-xl text-white/70">Visão geral da operação de SMS (mês corrente, hora de Lisboa).</p>
+          </div>
+          <div className="rounded-xl bg-white/10 px-4 py-2.5 text-sm text-white/85 ring-1 ring-white/15 backdrop-blur">Provider: {provider}</div>
         </div>
-        <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">Provider: {provider}</div>
       </div>
       {mode === "TEST" ? <TestModeBanner /> : null}
       {!eventsConfigured ? (
@@ -85,11 +105,12 @@ export default async function DashboardPage() {
         </div>
       ) : null}
 
-      <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="stagger mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {[...cards, ["Custo real (mês, USD)", realCostUsd, "Reportado nos eventos AWS; sem eventos = 0"] as [string, number, string]].map(([label, value, hint]) => (
-          <div key={label} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="text-sm text-slate-500">{label}</div>
-            <div className="mt-2 text-3xl font-bold">
+          <div key={label} className="card-lift relative overflow-hidden rounded-xl border border-slate-200 bg-white p-5">
+            <span aria-hidden="true" className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${ACCENT[label] ?? "from-brand-cyan to-brand-deep"}`} />
+            <div className="text-sm font-medium text-slate-500">{label}</div>
+            <div className="mt-2 text-3xl font-bold tabular-nums text-brand-deep">
               {label.startsWith("Custo") ? value.toLocaleString("pt-PT", { minimumFractionDigits: 2, maximumFractionDigits: 4 }) : value}
             </div>
             {hint ? <div className="mt-1 text-xs text-slate-500">{hint}</div> : null}

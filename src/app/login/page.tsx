@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { loginAction } from "@/app/actions/auth";
+import { AuthLayout } from "@/components/auth-layout";
 import { getCurrentUser } from "@/lib/auth/session";
 
 export default async function LoginPage({
@@ -12,44 +13,37 @@ export default async function LoginPage({
   const params = await searchParams;
 
   return (
-    <main className="min-h-screen grid place-items-center p-6">
-      <div className="w-full max-w-md rounded-2xl bg-white p-8 shadow-sm border border-slate-200">
-        <p className="text-sm font-semibold text-indigo-600">SMS AWS</p>
-        <h1 className="mt-2 text-2xl font-bold">Iniciar sessão</h1>
-        <p className="mt-2 text-sm text-slate-600">
-          Acesso reservado a utilizadores autorizados.
-        </p>
+    <AuthLayout title="Iniciar sessão" subtitle="Acesso reservado a utilizadores autorizados.">
+      {params.error ? (
+        <div role="alert" className="mt-5 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{params.error}</div>
+      ) : null}
 
-        {params.error ? (
-          <div className="mt-5 rounded-lg bg-red-50 p-3 text-sm text-red-700">{params.error}</div>
-        ) : null}
-
-        <form action={loginAction} className="mt-6 space-y-4">
-          <label className="block text-sm font-medium">
-            Email
-            <input
-              name="email"
-              type="email"
-              required
-              autoComplete="email"
-              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
-            />
-          </label>
-          <label className="block text-sm font-medium">
-            Palavra-passe
-            <input
-              name="password"
-              type="password"
-              required
-              autoComplete="current-password"
-              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
-            />
-          </label>
-          <button className="w-full rounded-lg bg-slate-900 px-4 py-2.5 font-semibold text-white hover:bg-slate-800">
-            Entrar
-          </button>
-        </form>
-      </div>
-    </main>
+      <form action={loginAction} className="mt-6 space-y-4">
+        <label className="block text-sm font-medium text-brand-deep">
+          Email
+          <input
+            name="email"
+            type="email"
+            required
+            autoComplete="email"
+            className="mt-1.5 w-full rounded-xl border border-slate-300 px-4 py-2.5"
+          />
+        </label>
+        <label className="block text-sm font-medium text-brand-deep">
+          Palavra-passe
+          <input
+            name="password"
+            type="password"
+            required
+            autoComplete="current-password"
+            className="mt-1.5 w-full rounded-xl border border-slate-300 px-4 py-2.5"
+          />
+        </label>
+        <button className="group relative w-full overflow-hidden rounded-xl bg-brand-deep px-4 py-3 font-semibold text-white shadow-[0_12px_28px_-14px_rgb(0_46_93/0.8)] hover:bg-slate-800">
+          <span className="relative z-10">Entrar</span>
+          <span aria-hidden="true" className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/15 to-transparent transition-transform duration-700 group-hover:translate-x-full" />
+        </button>
+      </form>
+    </AuthLayout>
   );
 }

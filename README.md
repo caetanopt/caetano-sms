@@ -540,6 +540,22 @@ Para um envio real, alterar explicitamente para:
 AWS_SMS_DRY_RUN=false
 ```
 
+## Identidade visual
+
+A interface segue o **Brand Book Caetano (04/2026)**:
+
+- **Wordmark**: desenho autoral extraído do vetor oficial do manual (`src/components/brand/`); nunca é
+  substituído por texto ou fonte. Branco sobre azul profundo; cyan/azul profundo sobre fundos claros;
+  altura mínima de 14 px.
+- **Cores**: azul profundo `#002E5D` (principal), azul cyan `#00AEEF`, cinza antracite `#2E3A46`,
+  cinza médio `#9CAEB8`, verde eco, laranja dinâmico, amarelo liberdade e respetivas gradações, como
+  tokens Tailwind (`brand-*`) em `src/app/globals.css`. As escalas `slate`/`indigo`/`emerald`/`amber`
+  usadas nas páginas estão remapeadas para a paleta da marca, com contraste AA para texto.
+- **Tipografia**: Montserrat (servida pela própria aplicação, `@fontsource-variable/montserrat`; sem
+  pedidos externos, compatível com a CSP). Claim "Your favourite way to move" em Montserrat Medium `#2aa8e0`.
+- **Animações**: entrada das páginas em cascata, elevação dos cartões, trajetos animados no login
+  ("a Caetano liga trajetos"); desativadas com `prefers-reduced-motion`.
+
 ## Estrutura
 
 ```text

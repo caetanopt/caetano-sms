@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { logoutAction } from "@/app/actions/auth";
 import { Feedback } from "@/components/feedback";
+import { AuthLayout } from "@/components/auth-layout";
 import { MfaPanel } from "@/components/mfa/mfa-panel";
 import { QrCode } from "@/components/mfa/qr-code";
 import { requireUser } from "@/lib/auth/session";
@@ -18,11 +19,7 @@ export default async function MfaPage({
   const status = await getMfaStatus(user.id);
 
   return (
-    <main className="min-h-screen p-6">
-      <div className="mx-auto w-full max-w-2xl">
-        <p className="text-sm font-semibold text-indigo-600">SMS AWS</p>
-        <h1 className="mt-2 text-2xl font-bold">Verificação em dois passos (2FA)</h1>
-        <p className="mt-2 text-sm text-slate-600">{user.name} · {user.email}</p>
+    <AuthLayout wide title="Verificação em dois passos (2FA)" subtitle={`${user.name} · ${user.email}`}>
         {user.mfaSetupRequired ? (
           <div role="alert" className="mt-5 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
             Os administradores têm de usar 2FA. Configura-o para continuar.
@@ -55,7 +52,6 @@ export default async function MfaPage({
             <button className="text-slate-600 hover:underline">Sair</button>
           </form>
         </div>
-      </div>
-    </main>
+    </AuthLayout>
   );
 }
