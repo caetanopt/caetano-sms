@@ -346,12 +346,16 @@ com telefone mascarado e sem o texto da mensagem.
   de confiança).
 - **Server Actions**: proteção CSRF nativa do Next (verificação de origem). Atrás de um proxy que
   altere o host, configurar `experimental.serverActions.allowedOrigins`.
-- **Dependências**: `pnpm audit` sem vulnerabilidades por resolver. Overrides em `pnpm-workspace.yaml`
-  para dependências transitivas (CLI do Prisma; `source-map-js` ^1.2.2 via postcss). Advisories
-  aceites conscientemente ficam em `auditConfig.ignoreGhsas`, com justificação: hoje só
-  GHSA-vfj7-8cjw-p6xm (`braces`, sem versão corrigida), presente apenas na cadeia de lint
-  (`eslint-config-next`), fora do build de produção e sem input de utilizadores. Rever quando sair
-  correção; qualquer advisory novo continua a falhar o `pnpm audit`.
+- **Dependências**: `pnpm audit:deps` (corre `pnpm audit` e o guarda dos advisories aceites).
+  Overrides em `pnpm-workspace.yaml` para dependências transitivas (CLI do Prisma; `source-map-js`
+  abaixo de 1.2.2 redirecionado para `^1.2.2`). Advisories aceites conscientemente ficam em
+  `audit.ignore`, cada um justificado em `scripts/check-audit-ignores.ts`. O pnpm ignora o GHSA em
+  todos os caminhos, por isso o guarda faz falhar o comando se o pacote afetado entrar na árvore
+  de produção ou se surgir um GHSA ignorado sem justificação. Hoje só GHSA-vfj7-8cjw-p6xm
+  (`braces` ≤ 3.0.3, sem versão corrigida): o pacote que o audit vê está só na cadeia de lint
+  (`eslint-config-next`); há cópias empacotadas no CLI do Prisma, `tsx`, vite e playwright, que
+  correm com padrões fixos e nunca com input de utilizadores. Qualquer outro advisory (severidade
+  low ou superior) continua a fazer falhar o `pnpm audit`. Rever quando sair versão corrigida.
 
 ### Gestão de utilizadores
 
