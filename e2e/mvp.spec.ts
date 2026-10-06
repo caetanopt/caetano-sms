@@ -118,7 +118,14 @@ test("campanha: revisão §29, 2.ª confirmação, envio até concluir", async (
   await page.locator("main label", { hasText: "Template" }).locator("select").selectOption({ label: "Aviso E2E (Transacional)" });
   await page.locator("main label", { hasText: "Data" }).locator("input").fill("15/10");
   await page.getByRole("button", { name: "Criar rascunho" }).click();
-  await page.waitForURL(/\/campaigns\/[a-z0-9]+/);
+  await page.waitForURL(/\/campaigns\/(?!new\b)[a-z0-9]+/);
+
+  // Mensagem de uso único: visível após criar, mas retirada do URL para não "colar" a estados seguintes.
+  const draftNotice = page.locator("main [role=status]").filter({ hasText: "Rascunho criado" });
+  await expect(draftNotice).toBeVisible();
+  await expect(page).not.toHaveURL(/[?&]success=/);
+  await page.waitForLoadState("networkidle");
+  await expect(draftNotice).toBeVisible();
 
   const summary = page.getByRole("region", { name: "Resumo antes do envio" });
   await expect(summary).toContainText("Destinatários elegíveis2");
@@ -142,6 +149,10 @@ test("campanha: revisão §29, 2.ª confirmação, envio até concluir", async (
   const progress = page.getByRole("region", { name: "Progresso da campanha" });
   await expect(progress).toContainText("Concluída", { timeout: 30_000 });
   await expect(progress.locator("[data-status=ACCEPTED]")).toHaveText("2");
+  await expect(page.getByText("Rascunho criado")).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole("region", { name: "Progresso da campanha" })).toContainText("Concluída");
+  await expect(page.getByText("Rascunho criado")).toHaveCount(0);
 
   await page.getByRole("link", { name: /Ver mensagens enviadas/ }).click();
   await expect(page.locator("tbody tr")).toHaveCount(2);

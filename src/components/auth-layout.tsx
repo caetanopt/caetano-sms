@@ -1,5 +1,6 @@
 import { Claim, Wordmark } from "./brand/wordmark";
 import { RouteLines } from "./brand/route-lines";
+import { ConsumeFlashParams } from "./consume-flash-params";
 
 /**
  * Layout das páginas de autenticação e conta: painel de marca (azul profundo, wordmark branco,
@@ -42,6 +43,8 @@ export function AuthLayout({
             <h1 className="text-2xl font-bold">{title}</h1>
             {subtitle ? <div className="mt-2 text-sm text-slate-600">{subtitle}</div> : null}
             {children}
+            {/* Login, palavra-passe e 2FA mostram `?error=`/`?success=`/`?notice=` diretamente. */}
+            <ConsumeFlashParams />
           </div>
           <p className="mt-6 text-center text-xs text-slate-400">Acesso reservado a utilizadores autorizados · Grupo Salvador Caetano</p>
         </div>
