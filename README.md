@@ -563,6 +563,14 @@ A interface segue o **Brand Book Caetano (04/2026)**:
   pedidos externos, compatível com a CSP). Claim "Your favourite way to move" em Montserrat Medium `#2aa8e0`.
 - **Animações**: entrada das páginas em cascata, elevação dos cartões, trajetos animados no login
   ("a Caetano liga trajetos"); desativadas com `prefers-reduced-motion`.
+- **Favicon e ícones** (`src/app/icon.svg`, `favicon.ico`, `apple-icon.png`): gerados do wordmark
+  oficial por `pnpm brand:icons` (`src/components/brand/icon-art.ts`; voltar a correr se o vetor
+  mudar — os testes falham se os ficheiros ficarem desatualizados). O separador usa o tratamento do
+  avatar oficial das redes sociais (§09): disco azul profundo com o wordmark branco a 84 % (dentro
+  da área de segurança), que passa a azul cyan em modo escuro. Nos tamanhos de separador
+  (16–48 px) o wordmark fica aquém do mínimo de 14 px por imposição do browser, como nos avatares
+  reduzidos; o ícone iOS (180 px, quadrado opaco) cumpre-o. Não se usa monograma: o manual não
+  define nenhum símbolo além do wordmark.
 
 ## Estrutura
 

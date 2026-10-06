@@ -15,6 +15,7 @@
     "worker:sms-jobs": "tsx scripts/sms-job-worker.ts",
     "retention": "tsx scripts/retention.ts",
     "aws:provision": "tsx scripts/aws-provision.ts",
+    "brand:icons": "tsx scripts/brand-icons.ts",
     "lint": "eslint .",
     "typecheck": "prisma generate && tsc --noEmit",
     "test": "vitest run",

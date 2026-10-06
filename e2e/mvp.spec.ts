@@ -207,6 +207,23 @@ test("headers de segurança e prontidão", async ({ request }) => {
   expect(await ready.json()).toEqual({ status: "ok" });
 });
 
+test("ícones da marca servidos sem sessão e anunciados no head", async ({ page, request }) => {
+  await page.goto("/login");
+  const svgIcon = page.locator('head link[rel="icon"][type="image/svg+xml"]');
+  await expect(svgIcon).toHaveCount(1);
+  await expect(page.locator('head link[rel="apple-touch-icon"][sizes="180x180"]')).toHaveCount(1);
+
+  for (const [path, type] of [
+    [(await svgIcon.getAttribute("href"))!, "image/svg+xml"],
+    ["/favicon.ico", "image/x-icon"],
+    [(await page.locator('head link[rel="apple-touch-icon"]').getAttribute("href"))!, "image/png"],
+  ]) {
+    const response = await request.get(path, { maxRedirects: 0 });
+    expect(response.status(), path).toBe(200);
+    expect(response.headers()["content-type"], path).toContain(type);
+  }
+});
+
 test("observabilidade: página só para ADMIN e métricas Prometheus com token", async ({ page, request }) => {
   await login(page, E2E_ADMIN);
   await page.getByRole("link", { name: "Observabilidade" }).click();
