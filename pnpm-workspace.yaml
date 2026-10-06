@@ -8,3 +8,14 @@ allowBuilds:
 overrides:
   deepmerge-ts: ">=8.0.0"
   mysql2: ">=3.23.1"
+  # GHSA-68fv-2mgg-jv7q (DoS em source maps indexados): via postcss (next, tailwind, vite).
+  source-map-js: "^1.2.2"
+
+# pnpm audit: advisories aceites conscientemente (rever quando houver versão corrigida).
+# GHSA-vfj7-8cjw-p6xm (braces <=3.0.3, sem versão corrigida): só existe na cadeia de lint
+# eslint-config-next > @next/eslint-plugin-next > fast-glob > micromatch > braces (dev, não
+# entra no build de produção). O único padrão expandido é `settings.next.rootDir` da nossa
+# configuração ESLint (não definido), nunca input de utilizadores: o DoS não é explorável.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-vfj7-8cjw-p6xm

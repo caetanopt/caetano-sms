@@ -346,8 +346,12 @@ com telefone mascarado e sem o texto da mensagem.
   de confiança).
 - **Server Actions**: proteção CSRF nativa do Next (verificação de origem). Atrás de um proxy que
   altere o host, configurar `experimental.serverActions.allowedOrigins`.
-- **Dependências**: `pnpm audit` sem vulnerabilidades conhecidas (overrides em `pnpm-workspace.yaml`
-  para dependências transitivas da CLI do Prisma).
+- **Dependências**: `pnpm audit` sem vulnerabilidades por resolver. Overrides em `pnpm-workspace.yaml`
+  para dependências transitivas (CLI do Prisma; `source-map-js` ^1.2.2 via postcss). Advisories
+  aceites conscientemente ficam em `auditConfig.ignoreGhsas`, com justificação: hoje só
+  GHSA-vfj7-8cjw-p6xm (`braces`, sem versão corrigida), presente apenas na cadeia de lint
+  (`eslint-config-next`), fora do build de produção e sem input de utilizadores. Rever quando sair
+  correção; qualquer advisory novo continua a falhar o `pnpm audit`.
 
 ### Gestão de utilizadores
 
