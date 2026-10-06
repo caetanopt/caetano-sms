@@ -69,16 +69,19 @@ test("login, contactos, lista e template", async ({ page }) => {
   await page.locator("main form button").first().click();
   await page.waitForURL(/\/lists\/[a-z0-9]+/);
   const phones = ["912345678", "913456789", "914567890", "915678901"];
+  const phoneInput = page.locator("main form input[name=phone]");
   for (const [index, phone] of phones.entries()) {
-    // O React repõe o formulário quando a ação anterior termina; se isso acontecer depois do
-    // preenchimento, o campo fica vazio. Repetir é seguro: adicionar um membro é idempotente.
-    await expect(async () => {
-      await page.fill("main form input[name=phone]", phone);
-      await page.getByRole("button", { name: "Adicionar" }).click();
-      await expect(page.locator("main table tbody tr")).toHaveCount(index + 1, { timeout: 2000 });
-    }).toPass({ timeout: 15000 });
-    await page.waitForLoadState("networkidle");
+    await phoneInput.fill(phone);
+    await page.getByRole("button", { name: "Adicionar" }).click();
+    // O React repõe o formulário quando a ação termina: esperar por isso antes do número seguinte
+    // (senão a reposição pode apagar o que já foi escrito).
+    await expect(phoneInput).toHaveValue("");
+    // Sem repetir a ação: a mesma mensagem ("Contacto adicionado à lista.") quatro vezes seguidas
+    // tem de mostrar sempre a lista atualizada (regressão do consumo das mensagens no URL).
+    await expect(page.locator("main table tbody tr")).toHaveCount(index + 1);
+    await expect(page.locator("main [role=status]")).toContainText("Contacto adicionado à lista.");
   }
+  await expect(page).not.toHaveURL(/[?&](success|f)=/);
 
   await page.goto("/templates/new");
   await page.locator("main label", { hasText: "Nome" }).locator("input").fill("Aviso E2E");
@@ -123,7 +126,7 @@ test("campanha: revisão §29, 2.ª confirmação, envio até concluir", async (
   // Mensagem de uso único: visível após criar, mas retirada do URL para não "colar" a estados seguintes.
   const draftNotice = page.locator("main [role=status]").filter({ hasText: "Rascunho criado" });
   await expect(draftNotice).toBeVisible();
-  await expect(page).not.toHaveURL(/[?&]success=/);
+  await expect(page).not.toHaveURL(/[?&](success|f)=/);
   await page.waitForLoadState("networkidle");
   await expect(draftNotice).toBeVisible();
 
@@ -288,8 +291,9 @@ test("gestão de utilizadores: criar, palavra-passe temporária obrigatória, de
   await page.getByRole("button", { name: "Guardar" }).click();
   await expect(page.locator("main [role=status]")).toContainText("Utilizador atualizado");
   await userPage.goto("/dashboard");
-  await userPage.waitForURL("**/login?error=*");
-  await expect(userPage.getByText("Sessão terminada")).toBeVisible();
+  // Estado final (a mensagem é retirada do URL logo após ser mostrada).
+  await expect(userPage).toHaveURL(/\/login$/);
+  await expect(userPage.getByRole("alert").filter({ hasText: "Sessão terminada" })).toBeVisible();
   await other.close();
 });
 
@@ -353,7 +357,7 @@ test("2FA: novo administrador é obrigado a configurar; login com código de rec
   await expect(admin2.getByRole("alert").filter({ hasText: "Código inválido" })).toBeVisible();
   await admin2.fill("input[name=code]", recovery);
   await admin2.getByRole("button", { name: "Verificar" }).click();
-  await admin2.waitForURL("**/account/mfa?notice=recovery");
+  await expect(admin2).toHaveURL(/\/account\/mfa$/);
   await expect(admin2.getByText("Entraste com um código de recuperação")).toBeVisible();
 
   // Reposição por outro administrador: termina a sessão; no próximo login volta a configurar.
@@ -363,7 +367,8 @@ test("2FA: novo administrador é obrigado a configurar; login com código de rec
   await page.getByRole("button", { name: "Repor 2FA" }).click();
   await expect(page.locator("main [role=status]")).toContainText("2FA reposto");
   await admin2.goto("/dashboard");
-  await admin2.waitForURL("**/login?error=*");
+  await expect(admin2).toHaveURL(/\/login$/);
+  await expect(admin2.getByRole("alert").filter({ hasText: "Sessão terminada" })).toBeVisible();
   await other.close();
 });
 

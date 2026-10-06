@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Feedback } from "@/components/feedback";
 import { TestModeBanner } from "@/components/test-mode-banner";
 import { campaignStatusLabel } from "@/features/campaigns/labels";
 import { ConsentStatus } from "@/generated/prisma/client";
@@ -7,8 +8,13 @@ import { prisma } from "@/lib/db/prisma";
 import { getSmsRuntimeConfig } from "@/lib/sms/config";
 import { formatLisbon, lisbonDayKey, startOfLisbonDay } from "@/lib/time/lisbon";
 
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ success?: string; error?: string }>;
+}) {
   const user = await requireUser();
+  const feedback = await searchParams;
   const today = lisbonDayKey(new Date());
   const dayStart = startOfLisbonDay(today)!;
   const monthStart = startOfLisbonDay(`${today.slice(0, 8)}01`)!;
@@ -97,6 +103,7 @@ export default async function DashboardPage() {
           <div className="rounded-xl bg-white/10 px-4 py-2.5 text-sm text-white/85 ring-1 ring-white/15 backdrop-blur">Provider: {provider}</div>
         </div>
       </div>
+      <Feedback success={feedback.success} error={feedback.error} />
       {mode === "TEST" ? <TestModeBanner /> : null}
       {!eventsConfigured ? (
         <div className="mt-4 rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-700">

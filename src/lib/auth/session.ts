@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { mfaRequiredFor } from "@/features/auth/mfa-policy";
 import { prisma } from "@/lib/db/prisma";
+import { flashUrl } from "@/lib/http/flash-params";
 
 const COOKIE_NAME = "sms_session";
 const SESSION_HOURS = 8;
@@ -135,7 +136,7 @@ export async function requireUser(
   if (!session) redirect("/login");
   const user = await getCurrentUser();
   // Não apagar o cookie aqui: em Server Components não é permitido. O login seguinte substitui-o.
-  if (!user) redirect("/login?error=Sess%C3%A3o%20terminada%3A%20inicia%20sess%C3%A3o%20novamente");
+  if (!user) redirect(flashUrl("/login", { error: "Sessão terminada: inicia sessão novamente" }));
   if (user.mustChangePassword && !options.allowPasswordChange) redirect("/account/password");
   if (user.mfaSetupRequired && !options.allowMfaSetup && !user.mustChangePassword) redirect("/account/mfa");
   return user;

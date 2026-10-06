@@ -9,7 +9,9 @@ function Consume() {
   useEffect(() => {
     // A mensagem já está no ecrã (renderizada no servidor); retirá-la do URL evita que reapareça
     // num refresh do router, num reload ou num link partilhado. O Next.js sincroniza o router com
-    // `history.replaceState` sem novo pedido ao servidor.
+    // `history.replaceState` sem novo pedido ao servidor, mas mantém a página guardada com a query
+    // antiga: o refresh seguinte faz uma recuperação interna (um pedido extra), e um novo redirect
+    // com a mesma mensagem só volta a renderizar a página graças ao nonce (`flash-params.ts`).
     const next = urlWithoutFlashParams(window.location.href);
     if (next) window.history.replaceState(null, "", next);
   }, [searchParams]);

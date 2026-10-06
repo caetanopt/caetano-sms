@@ -7,6 +7,7 @@ import { clientIpFromHeaders } from "@/features/auth/login-throttle";
 import type { MfaFormState } from "@/features/auth/mfa-form-state";
 import { clearMfaPending, readMfaPending } from "@/lib/auth/mfa-pending";
 import { createSession, requireUser } from "@/lib/auth/session";
+import { flashUrl } from "@/lib/http/flash-params";
 import { redirectWith } from "@/lib/http/redirect-with";
 import {
   completeMfaLogin,
@@ -42,7 +43,7 @@ export async function verifyMfaLoginAction(_previous: MfaFormState, formData: Fo
   await createSession({ userId: user.id, email: user.email, name: user.name, role: user.role, sessionVersion: user.sessionVersion, mfa: true });
   if (user.mustChangePassword) redirect("/account/password");
   // Código de recuperação usado: avisar e sugerir gerar novos.
-  if (method === "recovery") redirect("/account/mfa?notice=recovery");
+  if (method === "recovery") redirect(flashUrl("/account/mfa", { notice: "recovery" }));
   redirect("/dashboard");
 }
 
