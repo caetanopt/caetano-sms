@@ -1,7 +1,7 @@
 import { ConsentStatus, Prisma, SmsMessageStatus } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import type { AuditEntry, ManualSendStore } from "@/server/services/manual-send";
-import { reserveInTransaction, type RateBlocked } from "@/server/services/send-rate";
+import { lockSendRateShared, reserveInTransaction, type RateBlocked } from "@/server/services/send-rate";
 
 /** Interrompe a transação de criação quando a reserva recusa (nada fica gravado). */
 class RateLimitedSignal extends Error {
@@ -51,7 +51,12 @@ export const prismaManualSendStore: ManualSendStore = {
   async createPendingMessage(data, reservation) {
     try {
       if (!reservation) {
-        const row = await prisma.smsMessage.create({ data: { ...data, status: SmsMessageStatus.PENDING }, select: { id: true } });
+        // Envio de campanha (já reservado no claim): inserir sob o lock partilhado para que uma
+        // reserva concorrente nunca conte a quota a meio desta inserção (ver send-rate.ts).
+        const row = await prisma.$transaction(async (tx) => {
+          await lockSendRateShared(tx);
+          return tx.smsMessage.create({ data: { ...data, status: SmsMessageStatus.PENDING }, select: { id: true } });
+        });
         return { kind: "created", id: row.id };
       }
       const row = await prisma.$transaction(async (tx) => {

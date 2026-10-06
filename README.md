@@ -203,11 +203,16 @@ em `/users/[id]`, só ADMIN, auditado `USER_QUOTA_CHANGED`; `0` = sem envios sem
 - **o que conta**: todas as mensagens criadas hoje pelo utilizador, incluindo em modo de teste, exceto
   `FAILED` garantidamente não enviadas (`THROTTLED`, `PROVIDER_UNAVAILABLE`, `AUTH_ERROR`,
   `CONFIGURATION_ERROR`, `SPEND_LIMIT`, `QUOTA_EXCEEDED` — a retentativa é cobrada quando acontece),
-  mais as reservas em curso (destinatários em processamento há menos de 5 min) das campanhas que confirmou;
+  mais as reservas em curso (destinatários em processamento há menos de 5 min, mesmo que reservados
+  antes da meia-noite) das campanhas que confirmou;
 - **aplicação atómica**: a quota é verificada na **reserva**, sob o mesmo `pg_advisory_xact_lock` do
   limite por minuto e dos baldes de MPS — no envio individual na mesma transação que cria o
   `SmsMessage`; nas campanhas em `claimNextRecipient` (qualquer instância ou worker SQS). Dois pedidos
-  simultâneos nunca passam ambos;
+  simultâneos nunca passam ambos. Como a contagem usa várias consultas, **todo o INSERT de
+  `SmsMessage` participa no lock**: o envio de campanha (já reservado) insere com o lock partilhado
+  (`pg_advisory_xact_lock_shared`), que não bloqueia outros envios mas espera que uma reserva em curso
+  termine de contar — sem isto, workers concorrentes podiam ultrapassar a quota numa mensagem. Um
+  teste falha se aparecer outro sítio a inserir `SmsMessage`;
 - **antes de confirmar**: a revisão §29 mostra "Quota diária de quem confirma" e **bloqueia** a
   confirmação se a campanha não couber no que resta hoje (descontando partes já comprometidas noutras
   campanhas suas por enviar). O `/send` mostra a quota e recusa mensagens que não cabem;

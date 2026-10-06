@@ -31,6 +31,13 @@ import { lisbonDayWindow } from "@/lib/time/lisbon";
  * `pg_advisory_xact_lock` para serializar a verificação "contar e reservar" entre
  * processos/pedidos concorrentes; o Prisma não tem equivalente. O lock é libertado
  * automaticamente no fim da transação. Não recebe input do utilizador.
+ *
+ * Invariante: TODO o INSERT de SmsMessage participa neste lock — o envio individual dentro da
+ * transação de reserva (exclusivo) e o envio de campanha com `lockSendRateShared` (partilhado:
+ * as inserções não se bloqueiam entre si, mas nenhuma conclui enquanto uma reserva conta). As
+ * contagens abaixo usam várias consultas em READ COMMITTED (cada uma com o seu snapshot); sem o
+ * invariante, uma mensagem inserida entre duas delas podia ser contada zero vezes e a quota
+ * diária ser ultrapassada por workers concorrentes.
  */
 const SEND_RATE_LOCK_KEY = 58_231_907;
 const WINDOW_MS = 60_000;
@@ -39,8 +46,21 @@ export const RESERVATION_TTL_MS = 5 * 60_000;
 
 type Tx = Prisma.TransactionClient;
 
-async function lockAndCount(tx: Tx, now: Date) {
+/** Lock exclusivo "contar e reservar" (primeira instrução da transação). */
+export async function lockSendRate(tx: Tx) {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(${SEND_RATE_LOCK_KEY})`;
+}
+
+/**
+ * Lock partilhado para inserir um SmsMessage fora da transação de reserva (envio de campanha, já
+ * reservado no claim). Primeira instrução da transação; ver o invariante no topo do ficheiro.
+ */
+export async function lockSendRateShared(tx: Tx) {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(${SEND_RATE_LOCK_KEY})`;
+}
+
+async function lockAndCount(tx: Tx, now: Date) {
+  await lockSendRate(tx);
   const since = new Date(now.getTime() - WINDOW_MS);
   const [messages, inFlight, oldest] = await Promise.all([
     tx.smsMessage.count({ where: { createdAt: { gt: since } } }),
@@ -101,7 +121,9 @@ function toState(row: BucketRow | undefined, fallback: () => BucketState): Bucke
 /**
  * Partes usadas hoje (dia civil de Lisboa) por quem paga: mensagens criadas por si (exceto
  * FAILED garantidamente não enviadas) + reservas em curso de campanhas que confirmou.
- * `db` pode ser a transação com o lock (autoritativo) ou o cliente (informativo).
+ * `db` pode ser a transação com o lock (autoritativo: as consultas separadas só são coerentes
+ * porque nenhum SmsMessage é inserido enquanto o lock exclusivo está detido) ou o cliente
+ * (informativo).
  */
 export async function quotaUsage(db: Tx, payerId: string, now: Date): Promise<number> {
   const { start } = lisbonDayWindow(now);
@@ -113,10 +135,12 @@ export async function quotaUsage(db: Tx, payerId: string, now: Date): Promise<nu
     }),
     db.smsMessage.count({ where: { createdById: payerId, createdAt: { gte: start }, segmentCountEstimate: null, NOT: notSent } }),
     // Reservas recentes (no máximo SMS_SQS_MAX_IN_FLIGHT/lote por campanha: conjunto pequeno).
+    // Sem limite no início do dia: uma reserva de antes da meia-noite cujo SmsMessage ainda não
+    // existe vai ser criada hoje (createdAt de hoje) e tem de contar já para a quota de hoje.
     db.campaignRecipient.findMany({
       where: {
         status: "PROCESSING",
-        claimedAt: { gte: new Date(Math.max(start.getTime(), now.getTime() - RESERVATION_TTL_MS)) },
+        claimedAt: { gte: new Date(now.getTime() - RESERVATION_TTL_MS) },
         campaign: { confirmedById: payerId },
       },
       select: { id: true, campaignId: true, attempt: true, segments: true },
@@ -270,7 +294,7 @@ export async function recordProviderThrottle(
   now = new Date(),
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${SEND_RATE_LOCK_KEY})`;
+    await lockSendRate(tx);
     const buckets = bucketsFor({ originKey: limits.originKey, phoneE164: target.phoneE164 }, limits.rate);
     const rows = await tx.sendRateBucket.findMany({ where: { key: { in: buckets.map((b) => b.key) } } });
     const byKey = new Map(rows.map((row) => [row.key, row]));

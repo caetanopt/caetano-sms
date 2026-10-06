@@ -1,7 +1,16 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/db/prisma";
 import { prismaManualSendStore } from "@/server/repositories/prisma-manual-send-store";
-import { claimNextRecipient, recordProviderThrottle, reserveSendCapacity, type SendRateLimits } from "@/server/services/send-rate";
+import { lisbonDayWindow } from "@/lib/time/lisbon";
+import {
+  claimNextRecipient,
+  lockSendRate,
+  lockSendRateShared,
+  quotaUsage,
+  recordProviderThrottle,
+  reserveSendCapacity,
+  type SendRateLimits,
+} from "@/server/services/send-rate";
 import { createActors, resetDatabase } from "./helpers";
 
 const PT = "+351912345678";
@@ -266,6 +275,70 @@ describe("daily quota (prismaManualSendStore.createPendingMessage)", () => {
     expect(await prismaManualSendStore.createPendingMessage(data, reservation(actors.operator.id, 1, now()))).toEqual({ kind: "duplicate" });
     const after = await prisma.sendRateBucket.findMany({ orderBy: { key: "asc" } });
     expect(after.map((b) => b.tokens)).toEqual(before.map((b) => b.tokens));
+  });
+
+  /** Mantém o lock de envio numa transação até `release()` (como um claim a contar a quota). */
+  async function holdLock(lock: typeof lockSendRate) {
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    let taken!: () => void;
+    const lockTaken = new Promise<void>((resolve) => (taken = resolve));
+    const done = prisma.$transaction(
+      async (tx) => {
+        await lock(tx);
+        taken();
+        await released;
+      },
+      { timeout: 10_000 },
+    );
+    await lockTaken;
+    return { release, done };
+  }
+  const settledWithin = async (promise: Promise<unknown>, ms: number) => {
+    let settled = false;
+    void promise.then(() => (settled = true));
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    return settled;
+  };
+
+  // Regressão: o claim conta a quota em várias consultas (READ COMMITTED); um SmsMessage de
+  // campanha inserido entre elas era contado zero vezes e a quota era ultrapassada (5 de 4).
+  it("a campaign message insert (no reservation) waits while a claim holds the send-rate lock", async () => {
+    const claim = await holdLock(lockSendRate);
+    let insert: ReturnType<typeof prismaManualSendStore.createPendingMessage>;
+    try {
+      insert = prismaManualSendStore.createPendingMessage(pending(actors.operator.id));
+      expect(await settledWithin(insert, 300)).toBe(false);
+      expect(await prisma.smsMessage.count()).toBe(0);
+    } finally {
+      claim.release();
+      await claim.done;
+    }
+    expect(await insert).toMatchObject({ kind: "created" });
+    expect(await prisma.smsMessage.count()).toBe(1);
+  });
+
+  it("campaign message inserts do not block each other (shared lock)", async () => {
+    const other = await holdLock(lockSendRateShared);
+    try {
+      const insert = prismaManualSendStore.createPendingMessage(pending(actors.operator.id));
+      expect(await settledWithin(insert, 1_000)).toBe(true);
+      expect(await insert).toMatchObject({ kind: "created" });
+    } finally {
+      other.release();
+      await other.done;
+    }
+  });
+
+  it("a reservation claimed just before Lisbon midnight still counts for the new day until its message exists", async () => {
+    const { start } = lisbonDayWindow(new Date("2026-07-02T10:00:00Z"));
+    const campaign = await prisma.campaign.create({
+      data: { name: "C", messageType: "TRANSACTIONAL", messageBody: "x", status: "SENDING", createdById: actors.admin.id, confirmedById: actors.operator.id },
+    });
+    await prisma.campaignRecipient.create({
+      data: { campaignId: campaign.id, status: "PROCESSING", segments: 2, claimToken: "a", claimedAt: new Date(start.getTime() - 30_000) },
+    });
+    expect(await quotaUsage(prisma, actors.operator.id, new Date(start.getTime() + 30_000))).toBe(2);
   });
 });
 
