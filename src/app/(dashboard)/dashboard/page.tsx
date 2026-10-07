@@ -16,7 +16,7 @@ export default async function DashboardPage({
 }) {
   const user = await requireUser();
   const feedback = await searchParams;
-  const flash = readFlash(feedback);
+  const flash = readFlash(feedback, "/dashboard");
   const today = lisbonDayKey(new Date());
   const dayStart = startOfLisbonDay(today)!;
   const monthStart = startOfLisbonDay(`${today.slice(0, 8)}01`)!;

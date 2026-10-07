@@ -17,7 +17,7 @@ export default async function TemplateDetailPage({
 }) {
   const user = await requireUser();
   const [{ id }, feedback] = await Promise.all([params, searchParams]);
-  const flash = readFlash(feedback);
+  const flash = readFlash(feedback, `/templates/${encodeURIComponent(id)}`);
   const template = await prisma.smsTemplate.findUnique({
     where: { id },
     include: { createdBy: { select: { name: true } }, _count: { select: { messages: true } } },

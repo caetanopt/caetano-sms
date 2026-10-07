@@ -17,7 +17,7 @@ export default async function MfaPage({
 }) {
   const user = await requireUser({ allowMfaSetup: true });
   const params = await searchParams;
-  const flash = readFlash(params);
+  const flash = readFlash(params, "/account/mfa");
   const status = await getMfaStatus(user.id);
 
   return (

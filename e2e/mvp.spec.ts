@@ -229,6 +229,26 @@ test("mensagens forjadas no URL não são mostradas (phishing) e são limpas", a
   await expect(page.locator("main [role=status]")).toHaveCount(0);
 });
 
+test("uma mensagem legítima só aparece na página para onde foi assinada", async ({ page }) => {
+  const visited: string[] = [];
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame()) visited.push(frame.url());
+  });
+  await page.goto("/login");
+  await page.fill("input[name=email]", "ninguem@example.com");
+  await page.fill("input[name=password]", "errada-errada");
+  await page.click("button");
+  await expect(page.getByRole("alert").filter({ hasText: "Credenciais inválidas" })).toBeVisible();
+  const signed = visited.find((url) => new URL(url).searchParams.has("f"));
+  expect(signed, "URL assinado do redirect").toBeDefined();
+
+  await login(page, E2E_ADMIN);
+  await page.goto(`/dashboard${new URL(signed!).search}`);
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+  await expect(page.getByText("Credenciais inválidas")).toHaveCount(0);
+  await expect(page).toHaveURL(/\/dashboard$/);
+});
+
 test("ícones da marca servidos sem sessão e anunciados no head", async ({ page, request }) => {
   await page.goto("/login");
   const svgIcon = page.locator('head link[rel="icon"][type="image/svg+xml"]');

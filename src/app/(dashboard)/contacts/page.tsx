@@ -41,7 +41,7 @@ export default async function ContactsPage({
 }) {
   const user = await requireUser();
   const params = await searchParams;
-  const flash = readFlash(params);
+  const flash = readFlash(params, "/contacts");
   const q = (params.q ?? "").trim().slice(0, 100);
   const consent = CONSENT_FILTERS.find((value) => value === params.consent);
   const page = parsePage(params.page);

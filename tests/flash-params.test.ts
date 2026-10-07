@@ -56,7 +56,8 @@ describe("redirectWith: tudo o que escreve no URL é verificável e consumido", 
     const added = [...new URL(url, BASE).searchParams.keys()].filter((key) => key !== "q");
     expect(added.every((key) => (FLASH_PARAMS as readonly string[]).includes(key))).toBe(true);
     expect(added).toEqual(expect.arrayContaining(["success", "error", FLASH_NONCE_PARAM]));
-    expect(readFlash(record(url))).toEqual({ success: "Contacto criado.", error: "Aviso" });
+    expect(readFlash(record(url), "/contacts")).toEqual({ success: "Contacto criado.", error: "Aviso" });
+    expect(readFlash(record(url), "/lists")).toEqual({});
     expect(urlWithoutFlashParams(new URL(url, BASE).href)).toBe("/contacts?q=maria");
   });
 

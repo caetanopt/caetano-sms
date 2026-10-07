@@ -15,7 +15,7 @@ export default async function TemplatesPage({
 }) {
   const user = await requireUser();
   const params = await searchParams;
-  const flash = readFlash(params);
+  const flash = readFlash(params, "/templates");
   const templates = await prisma.smsTemplate.findMany({
     orderBy: { updatedAt: "desc" },
     include: { createdBy: { select: { name: true } } },

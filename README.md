@@ -353,14 +353,16 @@ com telefone mascarado e sem o texto da mensagem.
   altere o host, configurar `experimental.serverActions.allowedOrigins`.
 - **Mensagens no URL (anti-phishing)**: as mensagens de feedback dos redirects (`?success=`,
   `?error=`, `?notice=`) são **assinadas** (HMAC-SHA256 com uma subchave de `AUTH_SECRET`) e
-  **expiram em 2 minutos** (`src/lib/http/flash.ts`). As páginas só mostram mensagens com
-  assinatura válida: um link forjado para o domínio real (ex.: `/login?error=A sua conta foi
-  suspensa…`) não mostra nada, e os parâmetros são retirados do URL. **Regra**: o texto destas
+  **expiram em 2 minutos** (`src/lib/http/flash.ts`). A assinatura cobre também a **página de
+  destino**: cada página indica a sua rota a `readFlash` e só aceita mensagens assinadas para ela
+  (um teste confirma que cada `page.tsx` indica a própria rota). Um link forjado para o domínio real
+  (ex.: `/login?error=A sua conta foi suspensa…`) não mostra nada, e os parâmetros são retirados do
+  URL. **Regra**: o texto destas
   mensagens é sempre fixo, escrito no servidor (no máximo com números, ex.: minutos de bloqueio) —
   mensagens com nomes ou texto do utilizador voltam pelo estado do formulário, nunca pelo URL. As
-  mensagens não estão ligadas à sessão nem à página (limitação aceite: só permite mostrar um texto
-  fixo da aplicação, como "Credenciais inválidas", noutro sítio); o prazo curto limita a reutilização
-  de links guardados. Mudar `AUTH_SECRET` invalida apenas as mensagens em trânsito.
+  mensagens não estão ligadas à sessão (limitação aceite: só permite repetir uma mensagem fixa da
+  aplicação na página que a produz); o prazo curto limita a reutilização de links guardados. Mudar
+  `AUTH_SECRET` invalida apenas as mensagens em trânsito.
 - **Dependências**: `pnpm audit:deps` (corre `pnpm audit` e o guarda dos advisories aceites).
   Overrides em `pnpm-workspace.yaml` para dependências transitivas (CLI do Prisma; `source-map-js`
   abaixo de 1.2.2 redirecionado para `^1.2.2`; `sharp` do Next abaixo de 0.35.5 redirecionado para

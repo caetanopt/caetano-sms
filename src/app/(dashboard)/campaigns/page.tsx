@@ -14,7 +14,7 @@ export default async function CampaignsPage({
 }) {
   const user = await requireUser();
   const params = await searchParams;
-  const flash = readFlash(params);
+  const flash = readFlash(params, "/campaigns");
   const campaigns = await prisma.campaign.findMany({
     orderBy: { createdAt: "desc" },
     take: 100,
