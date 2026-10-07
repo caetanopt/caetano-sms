@@ -43,7 +43,8 @@ export function AuthLayout({
             <h1 className="text-2xl font-bold">{title}</h1>
             {subtitle ? <div className="mt-2 text-sm text-slate-600">{subtitle}</div> : null}
             {children}
-            {/* Login, palavra-passe e 2FA mostram `?error=`/`?success=`/`?notice=` diretamente. */}
+            {/* Login, palavra-passe e 2FA mostram as suas mensagens sem <Feedback> (só as com assinatura
+                válida, readFlash); aqui retiram-se do URL, incluindo as forjadas ou expiradas. */}
             <ConsumeFlashParams />
           </div>
           <p className="mt-6 text-center text-xs text-slate-400">Acesso reservado a utilizadores autorizados · Grupo Salvador Caetano</p>

@@ -72,8 +72,15 @@ describe("mensagens assinadas: phishing e adulteração", () => {
     const [nonce, expiry, signature] = (p.f as string).split(".");
     const flip = (value: string) => value.slice(0, -1) + (value.endsWith("a") ? "b" : "a");
     expect(read({ ...p, f: `${flip(nonce)}.${expiry}.${signature}` })).toEqual({});
-    expect(read({ ...p, f: `${nonce}.${(parseInt(expiry, 36) + 60).toString(36)}.${signature}` })).toEqual({});
+    // Expiração alterada mas ainda dentro da janela aceite: só a assinatura a pode recusar.
+    const earlier = (parseInt(expiry, 36) - 30).toString(36);
+    expect(read({ ...p, f: `${nonce}.${earlier}.${signature}` })).toEqual({});
     expect(read({ ...p, f: `${nonce}.${expiry}.${flip(signature)}` })).toEqual({});
+  });
+
+  it("uma assinatura forjada com nonce e expiração plausíveis é recusada pela assinatura", () => {
+    const expiry = Math.floor((NOW.getTime() + 60_000) / 1000).toString(36);
+    expect(read({ error: "A sua conta foi suspensa.", f: `0123abcd.${expiry}.AAAAAAAAAAAAAAAAAAAAAA` })).toEqual({});
   });
 
   it("recusa assinaturas de outra chave", () => {

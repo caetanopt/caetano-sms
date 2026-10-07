@@ -212,7 +212,8 @@ test("headers de segurança e prontidão", async ({ request }) => {
 
 test("mensagens forjadas no URL não são mostradas (phishing) e são limpas", async ({ page }) => {
   const phishing = "A sua conta foi suspensa. Ligue para 912 345 678.";
-  const fakeSignature = "00000000.zzzzzz.AAAAAAAAAAAAAAAAAAAAAA";
+  // Nonce e expiração plausíveis (dentro da janela aceite): só a assinatura pode recusar o link.
+  const fakeSignature = `00000000.${Math.floor(Date.now() / 1000 + 60).toString(36)}.AAAAAAAAAAAAAAAAAAAAAA`;
   for (const query of [`error=${encodeURIComponent(phishing)}`, `error=${encodeURIComponent(phishing)}&f=${fakeSignature}`]) {
     await page.goto(`/login?${query}`);
     await expect(page.getByRole("heading", { name: "Iniciar sessão" })).toBeVisible();

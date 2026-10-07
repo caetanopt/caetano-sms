@@ -11,9 +11,14 @@ import { FLASH_MESSAGE_PARAMS, FLASH_NONCE_PARAM, type FlashMessages } from "./f
  * de AUTH_SECRET) sobre as mensagens, o nonce e a expiração. As páginas só mostram mensagens com
  * assinatura válida e dentro do prazo; links forjados ou alterados não mostram nada.
  *
- * O prazo é curto (FLASH_TTL_MS) porque algumas mensagens incluem texto escrito por utilizadores
- * (ex.: nome de uma lista): um URL legítimo deixa de mostrar a mensagem pouco depois do redirect.
- * O nonce torna cada redirect único (ver `flash-params.ts`).
+ * Regra: o texto destas mensagens tem de ser fixo, escrito no servidor (no máximo com números
+ * calculados no servidor, ex.: minutos de bloqueio) — nunca nomes, texto livre ou outro input de
+ * utilizadores. As mensagens não estão ligadas à sessão nem à página: qualquer pessoa consegue obter
+ * um URL acabado de assinar com uma mensagem da aplicação (ex.: "Credenciais inválidas") e mostrá-lo
+ * noutra página. Isso é aceitável só porque o texto não é escolhido por quem ataca; mensagens com
+ * nomes ou texto do utilizador voltam pelo estado do formulário (useActionState), não pelo URL.
+ * O prazo curto (FLASH_TTL_MS) limita a reutilização de um link guardado ou partilhado. O nonce
+ * torna cada redirect único (ver `flash-params.ts`).
  */
 export const FLASH_TTL_MS = 2 * 60_000;
 /** Tolerância para relógios ligeiramente diferentes entre instâncias. */
