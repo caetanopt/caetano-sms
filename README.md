@@ -360,10 +360,14 @@ com telefone mascarado e sem o texto da mensagem.
   URL. **Regra**: o texto destas
   mensagens é sempre fixo, escrito no servidor (no máximo com números, ex.: minutos de bloqueio) —
   mensagens com nomes ou texto do utilizador voltam pelo estado do formulário, nunca pelo URL. A
-  assinatura cobre ainda o **browser**: um cookie aleatório e HttpOnly (`sms_flash_bid`, criado na
-  primeira ação com mensagem ou ao iniciar sessão; também existe no `/login`, onde não há sessão).
-  Um link assinado só mostra a mensagem no browser que o originou — quem provoca uma mensagem
-  legítima recebe-a ligada ao seu próprio cookie, que a vítima não tem. `redirectWith` é assíncrona
+  assinatura cobre ainda o **browser**: um cookie aleatório e HttpOnly (`__Host-sms_flash_bid` em
+  produção; `sms_flash_bid` em desenvolvimento por http), criado na primeira ação com mensagem,
+  **renovado com valor novo em cada login** e removido no logout; também existe no `/login`, onde
+  não há sessão. Um link assinado só mostra a mensagem no browser que o originou — quem provoca uma
+  mensagem legítima recebe-a ligada ao seu próprio cookie, que a vítima não tem. O prefixo
+  `__Host-` (Secure, Path=/, sem Domain) impede que um subdomínio irmão (ex.: outro site em
+  `*.empresa.pt`) plante o seu valor no browser da vítima ("cookie tossing"); se o cookie chegar em
+  duplicado, a mensagem é ignorada. `redirectWith` é assíncrona
   e usa-se sempre com `return` (um teste garante-o). O prazo curto limita a reutilização de links
   guardados. Mudar `AUTH_SECRET` invalida apenas as mensagens em trânsito.
 - **Dependências**: `pnpm audit:deps` (corre `pnpm audit` e o guarda dos advisories aceites).

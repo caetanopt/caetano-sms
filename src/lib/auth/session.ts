@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { mfaRequiredFor } from "@/features/auth/mfa-policy";
 import { prisma } from "@/lib/db/prisma";
-import { ensureFlashCookie, flashUrl } from "@/lib/http/flash";
+import { clearFlashCookie, flashUrl, rotateFlashCookie } from "@/lib/http/flash";
 
 const COOKIE_NAME = "sms_session";
 const SESSION_HOURS = 8;
@@ -49,13 +49,14 @@ export async function createSession(claims: SessionClaims) {
     path: "/",
     maxAge: SESSION_HOURS * 60 * 60,
   });
-  // Mensagens produzidas mais tarde durante a renderização (ex.: "Sessão terminada") precisam dele.
-  await ensureFlashCookie();
+  // Cookie de mensagens novo a cada login (ver rotateFlashCookie).
+  await rotateFlashCookie();
 }
 
 export async function destroySession() {
   const jar = await cookies();
   jar.delete(COOKIE_NAME);
+  await clearFlashCookie();
 }
 
 export async function readSession(): Promise<SessionClaims | null> {
@@ -138,8 +139,9 @@ export async function requireUser(
   if (!session) redirect("/login");
   const user = await getCurrentUser();
   // Não apagar o cookie aqui: em Server Components não é permitido. O login seguinte substitui-o.
-  // Durante a renderização não se podem criar cookies: sem cookie de mensagens, redireciona sem texto.
-  if (!user) redirect(await flashUrl("/login", { error: "Sessão terminada: inicia sessão novamente" }, { canSetCookie: false }));
+  // Numa server action cria o cookie de mensagens se faltar; durante a renderização não é possível
+  // e, sem cookie, redireciona sem texto.
+  if (!user) redirect(await flashUrl("/login", { error: "Sessão terminada: inicia sessão novamente" }));
   if (user.mustChangePassword && !options.allowPasswordChange) redirect("/account/password");
   if (user.mfaSetupRequired && !options.allowMfaSetup && !user.mustChangePassword) redirect("/account/mfa");
   return user;

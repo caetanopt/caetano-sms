@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { FLASH_MESSAGE_PARAMS, FLASH_NONCE_PARAM, type FlashMessages } from "./flash-params";
 
 /**
@@ -16,10 +16,13 @@ import { FLASH_MESSAGE_PARAMS, FLASH_NONCE_PARAM, type FlashMessages } from "./f
  * para onde a aplicação redirecionou (ex.: "Credenciais inválidas" só no /login), e cada página
  * indica o seu caminho a `readFlash`.
  *
- * A assinatura cobre ainda a sessão do browser: um cookie aleatório e HttpOnly (FLASH_COOKIE),
- * criado na primeira ação que produz uma mensagem. Um link assinado só funciona no browser que o
- * originou; quem obtém um URL assinado (ex.: provocando "Credenciais inválidas") recebe-o ligado ao
- * SEU cookie, que a vítima não tem e não pode ler.
+ * A assinatura cobre ainda a sessão do browser: um cookie aleatório e HttpOnly (`flashCookieName`),
+ * criado na primeira ação que produz uma mensagem e renovado (com valor novo) em cada login. Um link
+ * assinado só funciona no browser que o originou; quem obtém um URL assinado (ex.: provocando
+ * "Credenciais inválidas") recebe-o ligado ao SEU cookie, que a vítima não tem e não pode ler.
+ * Em produção o cookie chama-se `__Host-…`: o browser recusa versões com Domain ou sem Secure, pelo
+ * que um subdomínio irmão (ex.: outro site em *.empresa.pt) não consegue plantar o seu valor
+ * ("cookie tossing"). Se o pedido trouxer o cookie em duplicado, a ligação é recusada.
  *
  * Regra: o texto destas mensagens tem de ser fixo, escrito no servidor (no máximo com números
  * calculados no servidor, ex.: minutos de bloqueio) — nunca nomes, texto livre ou outro input de
@@ -34,8 +37,23 @@ const NONCE = /^[0-9a-f]{8}$/;
 const EXPIRY = /^[0-9a-z]{1,11}$/;
 const SIGNATURE = /^[A-Za-z0-9_-]{22}$/;
 const BINDING = /^[A-Za-z0-9_-]{22}$/;
-/** Cookie que liga as mensagens ao browser (não é a sessão de login: existe também no /login). */
-export const FLASH_COOKIE = "sms_flash_bid";
+const FLASH_COOKIE_MAX_AGE = 30 * 24 * 60 * 60;
+
+function secureCookies(): boolean {
+  return process.env.NODE_ENV === "production";
+}
+
+/**
+ * Cookie que liga as mensagens ao browser (não é a sessão de login: existe também no /login).
+ * `__Host-` exige Secure, Path=/ e nenhum Domain; em desenvolvimento (http) usa-se o nome simples.
+ */
+export function flashCookieName(): string {
+  return secureCookies() ? "__Host-sms_flash_bid" : "sms_flash_bid";
+}
+
+function flashCookieOptions(maxAge = FLASH_COOKIE_MAX_AGE) {
+  return { httpOnly: true, secure: secureCookies(), sameSite: "lax" as const, path: "/", maxAge };
+}
 
 let derivedKey: { source: string; key: Buffer } | null = null;
 
@@ -94,41 +112,60 @@ export function buildFlashUrl(path: string, messages: FlashMessages, options: Si
   return `${base}${base.includes("?") ? "&" : "?"}${params.toString()}${hash}`;
 }
 
-/**
- * Identificador do browser para ligar as mensagens. Em server actions cria o cookie se faltar;
- * durante a renderização (`canSetCookie: false`) não é possível escrever cookies e devolve null.
- */
-async function flashBinding(canSetCookie: boolean): Promise<string | null> {
-  const jar = await cookies();
-  const current = jar.get(FLASH_COOKIE)?.value;
-  if (current && BINDING.test(current)) return current;
-  if (!canSetCookie) return null;
-  const created = randomBytes(16).toString("base64url");
-  jar.set(FLASH_COOKIE, created, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    maxAge: 30 * 24 * 60 * 60,
-  });
-  return created;
+/** Quantas vezes o cookie vem no cabeçalho (mais de uma = valor plantado por outro domínio). */
+async function flashCookieCount(name: string): Promise<number> {
+  const raw = (await headers()).get("cookie") ?? "";
+  return raw.split(";").filter((part) => part.trim().startsWith(`${name}=`)).length;
+}
+
+/** Escreve o cookie; durante a renderização o Next não o permite e devolve false (sem erro). */
+async function writeFlashCookie(value: string, maxAge?: number): Promise<boolean> {
+  try {
+    (await cookies()).set(flashCookieName(), value, flashCookieOptions(maxAge));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Garante o cookie de mensagens (chamar em contextos que podem escrever cookies, ex.: ao iniciar
- * sessão), para que mensagens produzidas durante a renderização — como "Sessão terminada" — tenham
- * a que se ligar.
+ * Identificador do browser para ligar as mensagens: "read" só lê; "create" cria o cookie se faltar
+ * (em server actions; durante a renderização não é possível e devolve null); "rotate" substitui-o
+ * sempre por um valor novo com o prazo completo (login).
  */
-export async function ensureFlashCookie(): Promise<void> {
-  await flashBinding(true);
+async function flashBinding(mode: "read" | "create" | "rotate"): Promise<string | null> {
+  const name = flashCookieName();
+  if (mode !== "rotate") {
+    if ((await flashCookieCount(name)) > 1) return null;
+    const current = (await cookies()).get(name)?.value;
+    if (current && BINDING.test(current)) return current;
+    if (mode === "read") return null;
+  }
+  const created = randomBytes(16).toString("base64url");
+  return (await writeFlashCookie(created)) ? created : null;
+}
+
+/**
+ * Novo cookie de mensagens ao iniciar sessão: valor novo (um valor antigo, plantado ou visto num
+ * computador partilhado deixa de servir) e prazo completo, que ultrapassa sempre a sessão (8 h) —
+ * mensagens produzidas durante a renderização, como "Sessão terminada", precisam dele.
+ */
+export async function rotateFlashCookie(): Promise<void> {
+  await flashBinding("rotate");
+}
+
+/** Remove o cookie de mensagens (logout). Com `__Host-`, a remoção também tem de ser Secure. */
+export async function clearFlashCookie(): Promise<void> {
+  await writeFlashCookie("", 0);
 }
 
 /**
  * Caminho com as mensagens assinadas para esta página e este browser. Sem cookie e sem poder
- * criá-lo (renderização), devolve o caminho sem mensagem: redireciona na mesma, sem texto.
+ * criá-lo (renderização) ou com o cookie em duplicado, devolve o caminho sem mensagem: redireciona
+ * na mesma, sem texto.
  */
-export async function flashUrl(path: string, messages: FlashMessages, options: { canSetCookie?: boolean } = {}): Promise<string> {
-  const binding = await flashBinding(options.canSetCookie ?? true);
+export async function flashUrl(path: string, messages: FlashMessages): Promise<string> {
+  const binding = await flashBinding("create");
   return binding ? buildFlashUrl(path, messages, { binding }) : path;
 }
 
@@ -141,7 +178,7 @@ type SearchParams = Partial<Record<string, string | string[]>>;
  * outra página ou outro browser), expirada, ou com algum parâmetro repetido.
  */
 export async function readFlash(params: SearchParams, path: string): Promise<FlashMessages> {
-  const binding = await flashBinding(false);
+  const binding = await flashBinding("read");
   return binding ? verifyFlash(params, path, { binding }) : {};
 }
 

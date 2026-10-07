@@ -281,6 +281,27 @@ test("uma mensagem assinada noutro browser não é mostrada (ligação à sessã
   await attackerContext.close();
 });
 
+test("cookie de mensagens: __Host-, Secure e HttpOnly; renovado no login e removido no logout", async ({ page, context }) => {
+  const flashCookie = async () => (await context.cookies()).find((cookie) => cookie.name.endsWith("sms_flash_bid"));
+  await page.goto("/login");
+  await page.fill("input[name=email]", "ninguem@example.com");
+  await page.fill("input[name=password]", "errada-errada");
+  await page.click("button");
+  await expect(page.getByRole("alert").filter({ hasText: "Credenciais inválidas" })).toBeVisible();
+  const before = await flashCookie();
+  // O servidor E2E corre em modo de produção: nome __Host- (o browser recusa-o com Domain ou sem Secure).
+  expect(before).toMatchObject({ name: "__Host-sms_flash_bid", secure: true, httpOnly: true, sameSite: "Lax", path: "/" });
+
+  await login(page, E2E_ADMIN);
+  const afterLogin = await flashCookie();
+  expect(afterLogin?.value).toBeTruthy();
+  expect(afterLogin?.value).not.toBe(before?.value);
+
+  await page.getByRole("button", { name: "Sair" }).click();
+  await page.waitForURL("**/login");
+  expect(await flashCookie()).toBeUndefined();
+});
+
 test("ícones da marca servidos sem sessão e anunciados no head", async ({ page, request }) => {
   await page.goto("/login");
   const svgIcon = page.locator('head link[rel="icon"][type="image/svg+xml"]');

@@ -5,8 +5,8 @@ const KEY = flashKey("test-secret-with-at-least-32-characters!!");
 const OTHER_KEY = flashKey("another-secret-with-at-least-32-characters");
 const NOW = new Date("2026-10-07T10:00:00Z");
 const BASE = "http://localhost:3000";
-const BID = "browserAAAAAAAAAAAAAAAA"; // cookie do browser da vítima/utilizador
-const OTHER_BID = "browserBBBBBBBBBBBBBBBB";
+const BID = "browserAAAAAAAAAAAAAAA"; // cookie do browser da vítima/utilizador
+const OTHER_BID = "browserBBBBBBBBBBBBBBB";
 
 const params = (url: string) => {
   const out: Record<string, string | string[]> = {};
