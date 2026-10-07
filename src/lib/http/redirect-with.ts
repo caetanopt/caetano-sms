@@ -9,7 +9,10 @@ import type { FlashMessages } from "./flash-params";
  *
  * O texto tem de ser fixo, escrito no servidor (sem nomes nem input de utilizadores): ver a regra
  * em `flash.ts`. Mensagens com conteúdo do utilizador devolvem-se pelo estado do formulário.
+ *
+ * Assíncrona (lê/cria o cookie que liga a mensagem ao browser): usar SEMPRE `return redirectWith(…)`
+ * — sem o `return`, a ação continuaria a correr (um teste garante isto).
  */
-export function redirectWith(path: string, feedback: Pick<FlashMessages, "success" | "error">): never {
-  redirect(flashUrl(path, feedback));
+export async function redirectWith(path: string, feedback: Pick<FlashMessages, "success" | "error">): Promise<never> {
+  redirect(await flashUrl(path, feedback));
 }

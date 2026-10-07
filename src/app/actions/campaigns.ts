@@ -76,21 +76,21 @@ export async function saveCampaignDraftAction(_previous: CampaignFormState, form
     if (!idSchema.safeParse(campaignId).success) return { error: "Pedido inválido." };
     const result = await updateCampaignDraft(user, campaignId, input);
     if (!result.ok) return { error: result.message };
-    redirectWith(`/campaigns/${campaignId}`, { success: "Rascunho guardado. Revê o resumo antes de confirmar." });
+    return redirectWith(`/campaigns/${campaignId}`, { success: "Rascunho guardado. Revê o resumo antes de confirmar." });
   }
   const result = await createCampaignDraft(user, input);
   if (!result.ok) return { error: result.message };
-  redirectWith(`/campaigns/${result.value.id}`, { success: "Rascunho criado. Revê o resumo antes de confirmar." });
+  return redirectWith(`/campaigns/${result.value.id}`, { success: "Rascunho criado. Revê o resumo antes de confirmar." });
 }
 
 export async function deleteCampaignDraftAction(campaignId: string, formData: FormData) {
   const user = await requireUser();
   if (formData.get("confirm") !== "on") {
-    redirectWith(`/campaigns/${encodeURIComponent(campaignId)}`, { error: "Confirma a eliminação assinalando a caixa." });
+    return redirectWith(`/campaigns/${encodeURIComponent(campaignId)}`, { error: "Confirma a eliminação assinalando a caixa." });
   }
   const result = await deleteCampaignDraft(user, campaignId);
-  if (!result.ok) redirectWith(`/campaigns/${encodeURIComponent(campaignId)}`, { error: result.message });
-  redirectWith("/campaigns", { success: "Rascunho eliminado." });
+  if (!result.ok) return redirectWith(`/campaigns/${encodeURIComponent(campaignId)}`, { error: result.message });
+  return redirectWith("/campaigns", { success: "Rascunho eliminado." });
 }
 
 export async function confirmCampaignAction(_previous: ConfirmFormState, formData: FormData): Promise<ConfirmFormState> {

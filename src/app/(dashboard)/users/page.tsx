@@ -19,7 +19,7 @@ export default async function UsersPage({
   const user = await requireUser();
   if (!can(user.role, "users:manage")) redirect("/dashboard");
   const params = await searchParams;
-  const flash = readFlash(params, "/users");
+  const flash = await readFlash(params, "/users");
   const users = await prisma.user.findMany({
     orderBy: [{ isActive: "desc" }, { name: "asc" }],
     select: {

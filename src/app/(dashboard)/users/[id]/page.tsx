@@ -25,7 +25,7 @@ export default async function UserDetailPage({
   const actor = await requireUser();
   if (!can(actor.role, "users:manage")) redirect("/dashboard");
   const [{ id }, feedback] = await Promise.all([params, searchParams]);
-  const flash = readFlash(feedback, `/users/${encodeURIComponent(id)}`);
+  const flash = await readFlash(feedback, `/users/${encodeURIComponent(id)}`);
   const user = await prisma.user.findUnique({
     where: { id },
     select: {

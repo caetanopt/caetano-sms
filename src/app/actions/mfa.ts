@@ -26,7 +26,7 @@ async function clientIp() {
 /** Segundo passo do login (após a palavra-passe). */
 export async function verifyMfaLoginAction(_previous: MfaFormState, formData: FormData): Promise<MfaFormState> {
   const pending = await readMfaPending();
-  if (!pending) redirectWith("/login", { error: "O início de sessão expirou. Introduz novamente a palavra-passe." });
+  if (!pending) return redirectWith("/login", { error: "O início de sessão expirou. Introduz novamente a palavra-passe." });
   const code = codeSchema.safeParse(formData.get("code"));
   if (!code.success) return { error: code.error.issues[0]?.message ?? "Código inválido." };
 
@@ -34,7 +34,7 @@ export async function verifyMfaLoginAction(_previous: MfaFormState, formData: Fo
   if (!result.ok) {
     if (/expirou/.test(result.message)) {
       await clearMfaPending();
-      redirectWith("/login", { error: result.message });
+      return redirectWith("/login", { error: result.message });
     }
     return { error: result.message };
   }
@@ -43,14 +43,14 @@ export async function verifyMfaLoginAction(_previous: MfaFormState, formData: Fo
   await createSession({ userId: user.id, email: user.email, name: user.name, role: user.role, sessionVersion: user.sessionVersion, mfa: true });
   if (user.mustChangePassword) redirect("/account/password");
   // Código de recuperação usado: avisar e sugerir gerar novos.
-  if (method === "recovery") redirect(flashUrl("/account/mfa", { notice: "recovery" }));
+  if (method === "recovery") redirect(await flashUrl("/account/mfa", { notice: "recovery" }));
   redirect("/dashboard");
 }
 
 export async function startMfaEnrollmentAction() {
   const user = await requireUser({ allowMfaSetup: true });
   const result = await startMfaEnrollment(user.id, { ip: await clientIp() });
-  if (!result.ok) redirectWith("/account/mfa", { error: result.message });
+  if (!result.ok) return redirectWith("/account/mfa", { error: result.message });
   redirect("/account/mfa");
 }
 

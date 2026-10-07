@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { FLASH_TTL_MS, flashKey, flashScope, flashUrl, readFlash, signFlash } from "@/lib/http/flash";
+import { buildFlashUrl, FLASH_TTL_MS, flashKey, flashScope, signFlash, verifyFlash } from "@/lib/http/flash";
 
 const KEY = flashKey("test-secret-with-at-least-32-characters!!");
 const OTHER_KEY = flashKey("another-secret-with-at-least-32-characters");
 const NOW = new Date("2026-10-07T10:00:00Z");
 const BASE = "http://localhost:3000";
+const BID = "browserAAAAAAAAAAAAAAAA"; // cookie do browser da vítima/utilizador
+const OTHER_BID = "browserBBBBBBBBBBBBBBBB";
 
 const params = (url: string) => {
   const out: Record<string, string | string[]> = {};
@@ -14,8 +16,8 @@ const params = (url: string) => {
   }
   return out;
 };
-const legit = (messages: Parameters<typeof flashUrl>[1], path = "/contacts") => params(flashUrl(path, messages, { key: KEY, now: NOW }));
-const read = (p: Record<string, string | string[]>, at = NOW, page = "/contacts") => readFlash(p, page, { key: KEY, now: at });
+const legit = (messages: Parameters<typeof buildFlashUrl>[1], path = "/contacts") => params(buildFlashUrl(path, messages, { binding: BID, key: KEY, now: NOW }));
+const read = (p: Record<string, string | string[]>, at = NOW, page = "/contacts") => verifyFlash(p, page, { binding: BID, key: KEY, now: at });
 
 describe("mensagens assinadas: aceitação", () => {
   it("aceita as mensagens produzidas pela aplicação (sucesso, erro, aviso)", () => {
@@ -84,13 +86,13 @@ describe("mensagens assinadas: phishing e adulteração", () => {
   });
 
   it("recusa assinaturas de outra chave", () => {
-    const p = params(flashUrl("/contacts", { error: "Credenciais inválidas" }, { key: OTHER_KEY, now: NOW }));
+    const p = params(buildFlashUrl("/contacts", { error: "Credenciais inválidas" }, { binding: BID, key: OTHER_KEY, now: NOW }));
     expect(read(p)).toEqual({});
   });
 
   it("recusa expiração demasiado longa (não emitida pela aplicação)", () => {
     const far = new Date(NOW.getTime() + 60 * 60_000);
-    const p = params(flashUrl("/contacts", { error: "x" }, { key: KEY, now: far }));
+    const p = params(buildFlashUrl("/contacts", { error: "x" }, { binding: BID, key: KEY, now: far }));
     expect(read(p)).toEqual({});
   });
 
@@ -104,13 +106,13 @@ describe("mensagens assinadas: phishing e adulteração", () => {
   });
 
   it("um nonce sem mensagens não mostra nada", () => {
-    expect(read({ f: signFlash("/contacts", {}, { key: KEY, now: NOW }) })).toEqual({});
+    expect(read({ f: signFlash("/contacts", {}, { binding: BID, key: KEY, now: NOW }) })).toEqual({});
   });
 });
 
 describe("mensagens ligadas à página de destino", () => {
   it("uma mensagem assinada para uma página não aparece noutra", () => {
-    const login = params(flashUrl("/login", { error: "Credenciais inválidas" }, { key: KEY, now: NOW }));
+    const login = params(buildFlashUrl("/login", { error: "Credenciais inválidas" }, { binding: BID, key: KEY, now: NOW }));
     expect(read(login, NOW, "/login")).toEqual({ error: "Credenciais inválidas" });
     for (const other of ["/dashboard", "/contacts", "/login/mfa", "/account/password", "/"]) {
       expect(read(login, NOW, other)).toEqual({});
@@ -118,21 +120,29 @@ describe("mensagens ligadas à página de destino", () => {
   });
 
   it("páginas com id: só a do mesmo registo", () => {
-    const list = params(flashUrl("/lists/abc123", { success: "Contacto adicionado à lista." }, { key: KEY, now: NOW }));
+    const list = params(buildFlashUrl("/lists/abc123", { success: "Contacto adicionado à lista." }, { binding: BID, key: KEY, now: NOW }));
     expect(read(list, NOW, "/lists/abc123")).toEqual({ success: "Contacto adicionado à lista." });
     expect(read(list, NOW, "/lists/abc124")).toEqual({});
     expect(read(list, NOW, "/contacts/abc123")).toEqual({});
   });
 
   it("o caminho é comparado sem query, hash, barra final nem diferenças de codificação", () => {
-    const p = params(flashUrl("/contacts/a b?q=maria#x", { success: "OK" }, { key: KEY, now: NOW }));
+    const p = params(buildFlashUrl("/contacts/a b?q=maria#x", { success: "OK" }, { binding: BID, key: KEY, now: NOW }));
     for (const page of ["/contacts/a b", `/contacts/${encodeURIComponent("a b")}`, "/contacts/a%20b/", "/contacts/a b?outra=1"]) {
       expect(read(p, NOW, page)).toEqual({ success: "OK" });
     }
-    expect(new URL(flashUrl("/contacts/x#lista", { success: "OK" }, { key: KEY, now: NOW }), BASE).hash).toBe("#lista");
+    expect(new URL(buildFlashUrl("/contacts/x#lista", { success: "OK" }, { binding: BID, key: KEY, now: NOW }), BASE).hash).toBe("#lista");
     expect(flashScope("/")).toBe("/");
     expect(flashScope("/login/")).toBe("/login");
     expect(flashScope("/x/%E0%A4%A")).toBe("/x/%E0%A4%A"); // codificação inválida: comparado tal como está
+  });
+});
+
+describe("mensagens ligadas ao browser (sessão)", () => {
+  it("um link assinado para outro browser não mostra nada (quem ataca só assina para o seu cookie)", () => {
+    const attacker = params(buildFlashUrl("/login", { error: "Credenciais inválidas" }, { binding: OTHER_BID, key: KEY, now: NOW }));
+    expect(verifyFlash(attacker, "/login", { binding: OTHER_BID, key: KEY, now: NOW })).toEqual({ error: "Credenciais inválidas" });
+    expect(verifyFlash(attacker, "/login", { binding: BID, key: KEY, now: NOW })).toEqual({});
   });
 });
 

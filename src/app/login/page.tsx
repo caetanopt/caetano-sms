@@ -12,7 +12,7 @@ export default async function LoginPage({
   // Sessão inválida (versão antiga, conta desativada) não conta: evita ciclo de redirecionamentos.
   if (await getCurrentUser()) redirect("/dashboard");
   const params = await searchParams;
-  const flash = readFlash(params, "/login");
+  const flash = await readFlash(params, "/login");
 
   return (
     <AuthLayout title="Iniciar sessão" subtitle="Acesso reservado a utilizadores autorizados.">

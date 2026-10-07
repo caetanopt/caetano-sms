@@ -24,7 +24,7 @@ export default async function ListDetailPage({
 }) {
   const user = await requireUser();
   const [{ id }, query] = await Promise.all([params, searchParams]);
-  const flash = readFlash(query, `/lists/${encodeURIComponent(id)}`);
+  const flash = await readFlash(query, `/lists/${encodeURIComponent(id)}`);
   const page = parsePage(query.page);
 
   const list = await prisma.contactList.findUnique({ where: { id } });

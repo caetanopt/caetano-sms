@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { cookies } from "next/headers";
 import { FLASH_MESSAGE_PARAMS, FLASH_NONCE_PARAM, type FlashMessages } from "./flash-params";
 
 /**
@@ -15,14 +16,16 @@ import { FLASH_MESSAGE_PARAMS, FLASH_NONCE_PARAM, type FlashMessages } from "./f
  * para onde a aplicação redirecionou (ex.: "Credenciais inválidas" só no /login), e cada página
  * indica o seu caminho a `readFlash`.
  *
+ * A assinatura cobre ainda a sessão do browser: um cookie aleatório e HttpOnly (FLASH_COOKIE),
+ * criado na primeira ação que produz uma mensagem. Um link assinado só funciona no browser que o
+ * originou; quem obtém um URL assinado (ex.: provocando "Credenciais inválidas") recebe-o ligado ao
+ * SEU cookie, que a vítima não tem e não pode ler.
+ *
  * Regra: o texto destas mensagens tem de ser fixo, escrito no servidor (no máximo com números
  * calculados no servidor, ex.: minutos de bloqueio) — nunca nomes, texto livre ou outro input de
- * utilizadores. As mensagens não estão ligadas à sessão: qualquer pessoa consegue obter um URL
- * acabado de assinar com uma mensagem da aplicação e enviá-lo para a página que a produz. Isso é
- * aceitável só porque o texto não é escolhido por quem ataca; mensagens com nomes ou texto do
- * utilizador voltam pelo estado do formulário (useActionState), não pelo URL. O prazo curto
- * (FLASH_TTL_MS) limita a reutilização de um link guardado ou partilhado. O nonce torna cada
- * redirect único (ver `flash-params.ts`).
+ * utilizadores; esses voltam pelo estado do formulário (useActionState), não pelo URL. O prazo
+ * curto (FLASH_TTL_MS) limita a reutilização de um link guardado. O nonce torna cada redirect
+ * único (ver `flash-params.ts`).
  */
 export const FLASH_TTL_MS = 2 * 60_000;
 /** Tolerância para relógios ligeiramente diferentes entre instâncias. */
@@ -30,6 +33,9 @@ const CLOCK_SKEW_MS = 30_000;
 const NONCE = /^[0-9a-f]{8}$/;
 const EXPIRY = /^[0-9a-z]{1,11}$/;
 const SIGNATURE = /^[A-Za-z0-9_-]{22}$/;
+const BINDING = /^[A-Za-z0-9_-]{22}$/;
+/** Cookie que liga as mensagens ao browser (não é a sessão de login: existe também no /login). */
+export const FLASH_COOKIE = "sms_flash_bid";
 
 let derivedKey: { source: string; key: Buffer } | null = null;
 
@@ -58,25 +64,23 @@ export function flashScope(path: string): string {
   return decoded.length > 1 ? decoded.replace(/\/+$/, "") || "/" : decoded;
 }
 
-function signature(key: Buffer, scope: string, messages: FlashMessages, nonce: string, expiry: string): string {
-  const canonical = JSON.stringify(["v2", scope, ...FLASH_MESSAGE_PARAMS.map((name) => messages[name] ?? ""), nonce, expiry]);
+function signature(key: Buffer, binding: string, scope: string, messages: FlashMessages, nonce: string, expiry: string): string {
+  const canonical = JSON.stringify(["v3", binding, scope, ...FLASH_MESSAGE_PARAMS.map((name) => messages[name] ?? ""), nonce, expiry]);
   return createHmac("sha256", key).update(canonical).digest("base64url").slice(0, 22); // 132 bits
 }
 
-/** Valor do parâmetro `f` para estas mensagens, destinadas à página `path`. */
-export function signFlash(
-  path: string,
-  messages: FlashMessages,
-  options: { key?: Buffer; now?: Date; nonce?: string } = {},
-): string {
+type SignOptions = { binding: string; key?: Buffer; now?: Date; nonce?: string };
+
+/** Valor do parâmetro `f` para estas mensagens, destinadas à página `path` e ao browser `binding`. */
+export function signFlash(path: string, messages: FlashMessages, options: SignOptions): string {
   const key = options.key ?? flashKey();
   const nonce = options.nonce ?? randomBytes(4).toString("hex");
   const expiry = Math.floor(((options.now ?? new Date()).getTime() + FLASH_TTL_MS) / 1000).toString(36);
-  return `${nonce}.${expiry}.${signature(key, flashScope(path), messages, nonce, expiry)}`;
+  return `${nonce}.${expiry}.${signature(key, options.binding, flashScope(path), messages, nonce, expiry)}`;
 }
 
-/** Caminho com as mensagens assinadas para essa página (o caminho pode já ter query, ex.: filtros). */
-export function flashUrl(path: string, messages: FlashMessages, options: { key?: Buffer; now?: Date; nonce?: string } = {}): string {
+/** Caminho com as mensagens assinadas (o caminho pode já ter query, ex.: filtros). Função pura. */
+export function buildFlashUrl(path: string, messages: FlashMessages, options: SignOptions): string {
   const params = new URLSearchParams();
   for (const name of FLASH_MESSAGE_PARAMS) {
     const value = messages[name];
@@ -90,15 +94,59 @@ export function flashUrl(path: string, messages: FlashMessages, options: { key?:
   return `${base}${base.includes("?") ? "&" : "?"}${params.toString()}${hash}`;
 }
 
+/**
+ * Identificador do browser para ligar as mensagens. Em server actions cria o cookie se faltar;
+ * durante a renderização (`canSetCookie: false`) não é possível escrever cookies e devolve null.
+ */
+async function flashBinding(canSetCookie: boolean): Promise<string | null> {
+  const jar = await cookies();
+  const current = jar.get(FLASH_COOKIE)?.value;
+  if (current && BINDING.test(current)) return current;
+  if (!canSetCookie) return null;
+  const created = randomBytes(16).toString("base64url");
+  jar.set(FLASH_COOKIE, created, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: 30 * 24 * 60 * 60,
+  });
+  return created;
+}
+
+/**
+ * Garante o cookie de mensagens (chamar em contextos que podem escrever cookies, ex.: ao iniciar
+ * sessão), para que mensagens produzidas durante a renderização — como "Sessão terminada" — tenham
+ * a que se ligar.
+ */
+export async function ensureFlashCookie(): Promise<void> {
+  await flashBinding(true);
+}
+
+/**
+ * Caminho com as mensagens assinadas para esta página e este browser. Sem cookie e sem poder
+ * criá-lo (renderização), devolve o caminho sem mensagem: redireciona na mesma, sem texto.
+ */
+export async function flashUrl(path: string, messages: FlashMessages, options: { canSetCookie?: boolean } = {}): Promise<string> {
+  const binding = await flashBinding(options.canSetCookie ?? true);
+  return binding ? buildFlashUrl(path, messages, { binding }) : path;
+}
+
 type SearchParams = Partial<Record<string, string | string[]>>;
 
 /**
  * Mensagens verificadas a partir dos parâmetros da página `path` (o caminho da própria página, ex.:
- * `/contacts/${encodeURIComponent(id)}`): devolve `{}` se faltar a assinatura, se não for válida
- * (texto alterado, acrescentado ou forjado, ou assinada para outra página), se tiver expirado ou
- * se algum parâmetro vier repetido.
+ * `/contacts/${encodeURIComponent(id)}`), para o browser deste pedido: devolve `{}` sem cookie,
+ * sem assinatura, com assinatura inválida (texto alterado, acrescentado ou forjado, assinada para
+ * outra página ou outro browser), expirada, ou com algum parâmetro repetido.
  */
-export function readFlash(params: SearchParams, path: string, options: { key?: Buffer; now?: Date } = {}): FlashMessages {
+export async function readFlash(params: SearchParams, path: string): Promise<FlashMessages> {
+  const binding = await flashBinding(false);
+  return binding ? verifyFlash(params, path, { binding }) : {};
+}
+
+/** Verificação pura (sem cookies): ver `readFlash`. */
+export function verifyFlash(params: SearchParams, path: string, options: { binding: string; key?: Buffer; now?: Date }): FlashMessages {
   const token = params[FLASH_NONCE_PARAM];
   if (typeof token !== "string") return {};
   const messages: FlashMessages = {};
@@ -121,7 +169,7 @@ export function readFlash(params: SearchParams, path: string, options: { key?: B
   } catch {
     return {};
   }
-  const expected = Buffer.from(signature(key, flashScope(path), messages, nonce, expiry));
+  const expected = Buffer.from(signature(key, options.binding, flashScope(path), messages, nonce, expiry));
   const actual = Buffer.from(given);
   return expected.length === actual.length && timingSafeEqual(expected, actual) ? messages : {};
 }

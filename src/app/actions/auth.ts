@@ -19,13 +19,13 @@ export async function loginAction(formData: FormData) {
     email: formData.get("email"),
     password: formData.get("password"),
   });
-  if (!parsed.success) redirectWith("/login", { error: "Dados inválidos" });
+  if (!parsed.success) return redirectWith("/login", { error: "Dados inválidos" });
 
   const ip = clientIpFromHeaders(await headers(), process.env.TRUST_PROXY === "true");
   const result = await attemptLogin({ ...parsed.data, ip });
   if (!result.ok) {
     // A mensagem nunca revela se a conta existe.
-    redirectWith("/login", {
+    return redirectWith("/login", {
       error:
         result.reason === "blocked"
           ? `Demasiadas tentativas falhadas. Tenta novamente dentro de ${Math.ceil((result.retryAfterMs ?? 60_000) / 60_000)} min.`

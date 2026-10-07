@@ -359,10 +359,13 @@ com telefone mascarado e sem o texto da mensagem.
   (ex.: `/login?error=A sua conta foi suspensa…`) não mostra nada, e os parâmetros são retirados do
   URL. **Regra**: o texto destas
   mensagens é sempre fixo, escrito no servidor (no máximo com números, ex.: minutos de bloqueio) —
-  mensagens com nomes ou texto do utilizador voltam pelo estado do formulário, nunca pelo URL. As
-  mensagens não estão ligadas à sessão (limitação aceite: só permite repetir uma mensagem fixa da
-  aplicação na página que a produz); o prazo curto limita a reutilização de links guardados. Mudar
-  `AUTH_SECRET` invalida apenas as mensagens em trânsito.
+  mensagens com nomes ou texto do utilizador voltam pelo estado do formulário, nunca pelo URL. A
+  assinatura cobre ainda o **browser**: um cookie aleatório e HttpOnly (`sms_flash_bid`, criado na
+  primeira ação com mensagem ou ao iniciar sessão; também existe no `/login`, onde não há sessão).
+  Um link assinado só mostra a mensagem no browser que o originou — quem provoca uma mensagem
+  legítima recebe-a ligada ao seu próprio cookie, que a vítima não tem. `redirectWith` é assíncrona
+  e usa-se sempre com `return` (um teste garante-o). O prazo curto limita a reutilização de links
+  guardados. Mudar `AUTH_SECRET` invalida apenas as mensagens em trânsito.
 - **Dependências**: `pnpm audit:deps` (corre `pnpm audit` e o guarda dos advisories aceites).
   Overrides em `pnpm-workspace.yaml` para dependências transitivas (CLI do Prisma; `source-map-js`
   abaixo de 1.2.2 redirecionado para `^1.2.2`; `sharp` do Next abaixo de 0.35.5 redirecionado para

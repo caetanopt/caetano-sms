@@ -36,7 +36,7 @@ const passwordSchema = z
 /** Só ADMIN; a role vem sempre da base de dados (requireUser). */
 async function requireAdmin() {
   const user = await requireUser();
-  if (!can(user.role, "users:manage")) redirectWith("/dashboard", { error: "Sem permissão para gerir utilizadores." });
+  if (!can(user.role, "users:manage")) return redirectWith("/dashboard", { error: "Sem permissão para gerir utilizadores." });
   return user;
 }
 
@@ -60,15 +60,15 @@ export async function updateUserAction(userId: string, formData: FormData) {
     isActive: formData.get("isActive"),
     dailyPartsLimit: String(formData.get("dailyPartsLimit") ?? "").trim(),
   });
-  if (!parsed.success) redirectWith(path, { error: parsed.error.issues[0]?.message ?? "Dados inválidos." });
+  if (!parsed.success) return redirectWith(path, { error: parsed.error.issues[0]?.message ?? "Dados inválidos." });
   const result = await updateUser(admin, userId, {
     name: parsed.data.name,
     role: parsed.data.role,
     isActive: parsed.data.isActive === "true",
     dailyPartsLimit: parsed.data.dailyPartsLimit === "" ? null : parsed.data.dailyPartsLimit,
   });
-  if (!result.ok) redirectWith(path, { error: result.message });
-  redirectWith(path, { success: "Utilizador atualizado." });
+  if (!result.ok) return redirectWith(path, { error: result.message });
+  return redirectWith(path, { success: "Utilizador atualizado." });
 }
 
 export async function resetPasswordAction(userId: string, _previous: UserSecretFormState, formData: FormData): Promise<UserSecretFormState> {
@@ -101,16 +101,16 @@ export async function changePasswordAction(_previous: PasswordChangeFormState, f
   });
   // Administrador ainda sem 2FA: o passo seguinte obrigatório é configurá-lo.
   if (user.mfaSetupRequired) redirect("/account/mfa");
-  redirectWith("/account/password", { success: "Palavra-passe alterada. As outras sessões foram terminadas." });
+  return redirectWith("/account/password", { success: "Palavra-passe alterada. As outras sessões foram terminadas." });
 }
 
 export async function resetUserMfaAction(userId: string, formData: FormData) {
   const admin = await requireAdmin();
   const path = `/users/${encodeURIComponent(userId)}`;
-  if (formData.get("confirm") !== "on") redirectWith(path, { error: "Confirma a reposição do 2FA assinalando a caixa." });
+  if (formData.get("confirm") !== "on") return redirectWith(path, { error: "Confirma a reposição do 2FA assinalando a caixa." });
   const ip = clientIpFromHeaders(await headers(), process.env.TRUST_PROXY === "true");
   const result = await resetUserMfa(admin, userId, { ip });
-  if (!result.ok) redirectWith(path, { error: result.message });
-  redirectWith(path, { success: "2FA reposto. O utilizador terá de o configurar de novo no próximo início de sessão." });
+  if (!result.ok) return redirectWith(path, { error: result.message });
+  return redirectWith(path, { success: "2FA reposto. O utilizador terá de o configurar de novo no próximo início de sessão." });
 }
 

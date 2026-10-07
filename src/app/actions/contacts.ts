@@ -59,7 +59,7 @@ export async function createContactAction(formData: FormData) {
     consentPurpose: text(formData, "consentPurpose"),
     consentTextVersion: text(formData, "consentTextVersion"),
   });
-  if (!parsed.success) redirectWith("/contacts", { error: firstIssue(parsed.error) });
+  if (!parsed.success) return redirectWith("/contacts", { error: firstIssue(parsed.error) });
 
   const result = await createContact(user, {
     name: parsed.data.name,
@@ -73,8 +73,8 @@ export async function createContactAction(formData: FormData) {
       textVersion: parsed.data.consentTextVersion,
     },
   });
-  if (!result.ok) redirectWith("/contacts", { error: result.message });
-  redirectWith(`/contacts/${result.value.id}`, {
+  if (!result.ok) return redirectWith("/contacts", { error: result.message });
+  return redirectWith(`/contacts/${result.value.id}`, {
     success: result.warning ? `Contacto criado. ${result.warning}` : "Contacto criado.",
   });
 }
@@ -87,33 +87,33 @@ export async function updateContactAction(contactId: string, formData: FormData)
     email: text(formData, "email"),
     notes: text(formData, "notes"),
   });
-  if (!parsed.success) redirectWith(path, { error: firstIssue(parsed.error) });
+  if (!parsed.success) return redirectWith(path, { error: firstIssue(parsed.error) });
 
   const result = await updateContactDetails(user, contactId, parsed.data);
-  if (!result.ok) redirectWith(path, { error: result.message });
-  redirectWith(path, { success: "Contacto atualizado." });
+  if (!result.ok) return redirectWith(path, { error: result.message });
+  return redirectWith(path, { success: "Contacto atualizado." });
 }
 
 export async function changeConsentAction(contactId: string, formData: FormData) {
   const user = await requireUser();
   const path = `/contacts/${encodeURIComponent(contactId)}`;
   const to = text(formData, "to");
-  if (to !== "OPTED_IN" && to !== "OPTED_OUT") redirectWith(path, { error: "Pedido inválido." });
+  if (to !== "OPTED_IN" && to !== "OPTED_OUT") return redirectWith(path, { error: "Pedido inválido." });
 
   const parsed = consentDetailsSchema.safeParse({
     consentSource: text(formData, "consentSource"),
     consentPurpose: text(formData, "consentPurpose"),
     consentTextVersion: text(formData, "consentTextVersion"),
   });
-  if (!parsed.success) redirectWith(path, { error: firstIssue(parsed.error) });
+  if (!parsed.success) return redirectWith(path, { error: firstIssue(parsed.error) });
 
   const result = await changeContactConsent(user, contactId, to, {
     source: parsed.data.consentSource,
     purpose: parsed.data.consentPurpose,
     textVersion: parsed.data.consentTextVersion,
   });
-  if (!result.ok) redirectWith(path, { error: result.message });
-  redirectWith(path, {
+  if (!result.ok) return redirectWith(path, { error: result.message });
+  return redirectWith(path, {
     success: result.warning ?? (to === "OPTED_OUT" ? "Opt-out registado." : "Opt-in registado."),
   });
 }
@@ -122,9 +122,9 @@ export async function deleteContactAction(contactId: string, formData: FormData)
   const user = await requireUser();
   const path = `/contacts/${encodeURIComponent(contactId)}`;
   if (text(formData, "confirm") !== "on") {
-    redirectWith(path, { error: "Confirma a eliminação assinalando a caixa." });
+    return redirectWith(path, { error: "Confirma a eliminação assinalando a caixa." });
   }
   const result = await deleteContact(user, contactId);
-  if (!result.ok) redirectWith(path, { error: result.message });
-  redirectWith("/contacts", { success: "Contacto eliminado. O histórico de mensagens e a suppression list mantêm-se." });
+  if (!result.ok) return redirectWith(path, { error: result.message });
+  return redirectWith("/contacts", { success: "Contacto eliminado. O histórico de mensagens e a suppression list mantêm-se." });
 }

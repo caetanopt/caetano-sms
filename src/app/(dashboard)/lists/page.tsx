@@ -16,7 +16,7 @@ export default async function ListsPage({
 }) {
   const user = await requireUser();
   const params = await searchParams;
-  const flash = readFlash(params, "/lists");
+  const flash = await readFlash(params, "/lists");
   const lists = await prisma.contactList.findMany({ orderBy: { name: "asc" } });
   const eligibility = await Promise.all(lists.map((list) => getListEligibility(list.id)));
   const canWrite = can(user.role, "lists:write");

@@ -249,6 +249,38 @@ test("uma mensagem legítima só aparece na página para onde foi assinada", asy
   await expect(page).toHaveURL(/\/dashboard$/);
 });
 
+test("uma mensagem assinada noutro browser não é mostrada (ligação à sessão)", async ({ page, browser }) => {
+  const failLogin = async (target: Page) => {
+    const visited: string[] = [];
+    target.on("framenavigated", (frame) => {
+      if (frame === target.mainFrame()) visited.push(frame.url());
+    });
+    await target.goto("/login");
+    await target.fill("input[name=email]", "ninguem@example.com");
+    await target.fill("input[name=password]", "errada-errada");
+    await target.click("button");
+    await expect(target.getByRole("alert").filter({ hasText: "Credenciais inválidas" })).toBeVisible();
+    return new URL(visited.find((url) => new URL(url).searchParams.has("f"))!).search;
+  };
+
+  // Quem ataca obtém um link legítimo, acabado de assinar, no seu próprio browser.
+  const attackerContext = await browser.newContext();
+  const attacker = await attackerContext.newPage();
+  const signedForAttacker = await failLogin(attacker);
+
+  // A vítima (com o seu próprio cookie de mensagens) abre esse link: nada é mostrado.
+  await failLogin(page);
+  await page.goto(`/login${signedForAttacker}`);
+  await expect(page.getByRole("heading", { name: "Iniciar sessão" })).toBeVisible();
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByText("Credenciais inválidas")).toHaveCount(0);
+
+  // Controlo: no browser de origem o mesmo link continua a mostrar a mensagem.
+  await attacker.goto(`/login${signedForAttacker}`);
+  await expect(attacker.getByRole("alert").filter({ hasText: "Credenciais inválidas" })).toBeVisible();
+  await attackerContext.close();
+});
+
 test("ícones da marca servidos sem sessão e anunciados no head", async ({ page, request }) => {
   await page.goto("/login");
   const svgIcon = page.locator('head link[rel="icon"][type="image/svg+xml"]');

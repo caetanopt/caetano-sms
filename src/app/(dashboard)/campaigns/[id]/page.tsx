@@ -47,7 +47,7 @@ export default async function CampaignDetailPage({
 }) {
   const user = await requireUser();
   const [{ id }, feedback] = await Promise.all([params, searchParams]);
-  const flash = readFlash(feedback, `/campaigns/${encodeURIComponent(id)}`);
+  const flash = await readFlash(feedback, `/campaigns/${encodeURIComponent(id)}`);
   const campaign = await prisma.campaign.findUnique({
     where: { id },
     include: {

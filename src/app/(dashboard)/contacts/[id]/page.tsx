@@ -30,7 +30,7 @@ export default async function ContactDetailPage({
 }) {
   const user = await requireUser();
   const [{ id }, feedback] = await Promise.all([params, searchParams]);
-  const flash = readFlash(feedback, `/contacts/${encodeURIComponent(id)}`);
+  const flash = await readFlash(feedback, `/contacts/${encodeURIComponent(id)}`);
 
   const contact = await prisma.contact.findUnique({
     where: { id },

@@ -13,7 +13,7 @@ export default async function ChangePasswordPage({
   searchParams: Promise<{ success?: string }>;
 }) {
   const user = await requireUser({ allowPasswordChange: true });
-  const { success } = readFlash(await searchParams, "/account/password");
+  const { success } = await readFlash(await searchParams, "/account/password");
 
   return (
     <AuthLayout title="Alterar palavra-passe" subtitle={`${user.name} · ${user.email}`}>

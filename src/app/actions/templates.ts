@@ -28,19 +28,19 @@ export async function saveTemplateAction(
   if (typeof templateId === "string" && templateId !== "") {
     const result = await updateTemplate(user, templateId, parsed.data);
     if (!result.ok) return { error: result.message };
-    redirectWith(`/templates/${encodeURIComponent(templateId)}`, { success: "Template atualizado." });
+    return redirectWith(`/templates/${encodeURIComponent(templateId)}`, { success: "Template atualizado." });
   }
 
   const result = await createTemplate(user, parsed.data);
   if (!result.ok) return { error: result.message };
-  redirectWith(`/templates/${encodeURIComponent(result.value.id)}`, { success: "Template criado." });
+  return redirectWith(`/templates/${encodeURIComponent(result.value.id)}`, { success: "Template criado." });
 }
 
 export async function deleteTemplateAction(templateId: string, formData: FormData) {
   const user = await requireUser();
   const path = `/templates/${encodeURIComponent(templateId)}`;
-  if (formData.get("confirm") !== "on") redirectWith(path, { error: "Confirma a eliminação assinalando a caixa." });
+  if (formData.get("confirm") !== "on") return redirectWith(path, { error: "Confirma a eliminação assinalando a caixa." });
   const result = await deleteTemplate(user, templateId);
-  if (!result.ok) redirectWith(path, { error: result.message });
-  redirectWith("/templates", { success: "Template eliminado. As mensagens já enviadas mantêm o texto." });
+  if (!result.ok) return redirectWith(path, { error: result.message });
+  return redirectWith("/templates", { success: "Template eliminado. As mensagens já enviadas mantêm o texto." });
 }
