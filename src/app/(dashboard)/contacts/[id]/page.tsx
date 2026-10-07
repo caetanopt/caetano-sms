@@ -9,6 +9,7 @@ import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { maskPhoneNumber } from "@/lib/phone/normalize";
 import { smsStatusLabel } from "@/lib/sms/status-labels";
+import { readFlash } from "@/lib/http/flash";
 
 const inputClass = "mt-1 w-full rounded-lg border border-slate-300 px-3 py-2";
 const card = "rounded-xl border border-slate-200 bg-white p-5";
@@ -29,6 +30,7 @@ export default async function ContactDetailPage({
 }) {
   const user = await requireUser();
   const [{ id }, feedback] = await Promise.all([params, searchParams]);
+  const flash = readFlash(feedback);
 
   const contact = await prisma.contact.findUnique({
     where: { id },
@@ -62,7 +64,7 @@ export default async function ContactDetailPage({
         {canWrite ? contact.phoneE164 : maskPhoneNumber(contact.phoneE164)} · criado em {formatDate(contact.createdAt)}
       </p>
 
-      <Feedback success={feedback.success} error={feedback.error} />
+      <Feedback success={flash.success} error={flash.error} />
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <section className={card}>

@@ -351,6 +351,13 @@ com telefone mascarado e sem o texto da mensagem.
   de confiança).
 - **Server Actions**: proteção CSRF nativa do Next (verificação de origem). Atrás de um proxy que
   altere o host, configurar `experimental.serverActions.allowedOrigins`.
+- **Mensagens no URL (anti-phishing)**: as mensagens de feedback dos redirects (`?success=`,
+  `?error=`, `?notice=`) são **assinadas** (HMAC-SHA256 com uma subchave de `AUTH_SECRET`) e
+  **expiram em 2 minutos** (`src/lib/http/flash.ts`). As páginas só mostram mensagens com
+  assinatura válida: um link forjado para o domínio real (ex.: `/login?error=A sua conta foi
+  suspensa…`) não mostra nada, e os parâmetros são retirados do URL. As mensagens não estão
+  ligadas à sessão; o prazo curto limita a partilha de um link legítimo cujo texto inclua nomes
+  escritos por utilizadores. Mudar `AUTH_SECRET` invalida apenas as mensagens em trânsito.
 - **Dependências**: `pnpm audit:deps` (corre `pnpm audit` e o guarda dos advisories aceites).
   Overrides em `pnpm-workspace.yaml` para dependências transitivas (CLI do Prisma; `source-map-js`
   abaixo de 1.2.2 redirecionado para `^1.2.2`). Advisories aceites conscientemente ficam em

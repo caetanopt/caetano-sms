@@ -7,6 +7,7 @@ import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { getSmsRuntimeConfig } from "@/lib/sms/config";
 import { formatLisbon, lisbonDayKey, startOfLisbonDay } from "@/lib/time/lisbon";
+import { readFlash } from "@/lib/http/flash";
 
 export default async function DashboardPage({
   searchParams,
@@ -15,6 +16,7 @@ export default async function DashboardPage({
 }) {
   const user = await requireUser();
   const feedback = await searchParams;
+  const flash = readFlash(feedback);
   const today = lisbonDayKey(new Date());
   const dayStart = startOfLisbonDay(today)!;
   const monthStart = startOfLisbonDay(`${today.slice(0, 8)}01`)!;
@@ -103,7 +105,7 @@ export default async function DashboardPage({
           <div className="rounded-xl bg-white/10 px-4 py-2.5 text-sm text-white/85 ring-1 ring-white/15 backdrop-blur">Provider: {provider}</div>
         </div>
       </div>
-      <Feedback success={feedback.success} error={feedback.error} />
+      <Feedback success={flash.success} error={flash.error} />
       {mode === "TEST" ? <TestModeBanner /> : null}
       {!eventsConfigured ? (
         <div className="mt-4 rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-700">

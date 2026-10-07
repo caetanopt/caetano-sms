@@ -4,6 +4,7 @@ import { AuthLayout } from "@/components/auth-layout";
 import { ChangePasswordForm } from "@/components/users/change-password-form";
 import { MIN_PASSWORD_LENGTH } from "@/features/auth/password-policy";
 import { requireUser } from "@/lib/auth/session";
+import { readFlash } from "@/lib/http/flash";
 
 /** Fora do layout (dashboard): acessível mesmo com palavra-passe temporária, sem navegação para o resto da app. */
 export default async function ChangePasswordPage({
@@ -12,7 +13,7 @@ export default async function ChangePasswordPage({
   searchParams: Promise<{ success?: string }>;
 }) {
   const user = await requireUser({ allowPasswordChange: true });
-  const { success } = await searchParams;
+  const { success } = readFlash(await searchParams);
 
   return (
     <AuthLayout title="Alterar palavra-passe" subtitle={`${user.name} · ${user.email}`}>

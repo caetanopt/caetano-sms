@@ -7,6 +7,7 @@ import { ROLE_LABELS } from "@/features/users/user-form-state";
 import { can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
+import { readFlash } from "@/lib/http/flash";
 
 const dateTime = (value: Date | null) => (value ? value.toLocaleString("pt-PT", { timeZone: "Europe/Lisbon" }) : "—");
 
@@ -18,6 +19,7 @@ export default async function UsersPage({
   const user = await requireUser();
   if (!can(user.role, "users:manage")) redirect("/dashboard");
   const params = await searchParams;
+  const flash = readFlash(params);
   const users = await prisma.user.findMany({
     orderBy: [{ isActive: "desc" }, { name: "asc" }],
     select: {
@@ -39,7 +41,7 @@ export default async function UsersPage({
       <p className="mt-2 text-slate-600">
         Não existe registo público: só administradores criam contas. Contas desativadas mantêm o histórico e a auditoria.
       </p>
-      <Feedback success={params.success} error={params.error} />
+      <Feedback success={flash.success} error={flash.error} />
 
       <section className="mt-6 rounded-xl border border-slate-200 bg-white p-5">
         <h2 className="mb-4 font-semibold">Novo utilizador</h2>

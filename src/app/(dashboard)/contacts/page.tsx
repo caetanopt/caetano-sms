@@ -9,6 +9,7 @@ import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { parsePage } from "@/lib/http/search-params";
 import { maskPhoneNumber, normalizePhoneNumber } from "@/lib/phone/normalize";
+import { readFlash } from "@/lib/http/flash";
 
 const PAGE_SIZE = 25;
 const CONSENT_FILTERS = ["OPTED_IN", "OPTED_OUT", "UNKNOWN"] as const;
@@ -40,6 +41,7 @@ export default async function ContactsPage({
 }) {
   const user = await requireUser();
   const params = await searchParams;
+  const flash = readFlash(params);
   const q = (params.q ?? "").trim().slice(0, 100);
   const consent = CONSENT_FILTERS.find((value) => value === params.consent);
   const page = parsePage(params.page);
@@ -88,7 +90,7 @@ export default async function ContactsPage({
         ) : null}
       </div>
 
-      <Feedback success={params.success} error={params.error} />
+      <Feedback success={flash.success} error={flash.error} />
 
       <div className={`mt-6 grid gap-6 ${canWrite ? "lg:grid-cols-[360px_1fr]" : ""}`}>
         {canWrite ? (

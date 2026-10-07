@@ -6,6 +6,7 @@ import { TemplateEditor } from "@/components/templates/template-editor";
 import { can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
+import { readFlash } from "@/lib/http/flash";
 
 export default async function TemplateDetailPage({
   params,
@@ -16,6 +17,7 @@ export default async function TemplateDetailPage({
 }) {
   const user = await requireUser();
   const [{ id }, feedback] = await Promise.all([params, searchParams]);
+  const flash = readFlash(feedback);
   const template = await prisma.smsTemplate.findUnique({
     where: { id },
     include: { createdBy: { select: { name: true } }, _count: { select: { messages: true } } },
@@ -30,7 +32,7 @@ export default async function TemplateDetailPage({
       <p className="mt-1 text-sm text-slate-600">
         Criado por {template.createdBy.name} · usado em {template._count.messages} mensagem(ns)
       </p>
-      <Feedback success={feedback.success} error={feedback.error} />
+      <Feedback success={flash.success} error={flash.error} />
 
       {canWrite ? (
         <>

@@ -4,6 +4,7 @@ import { checkTemplateBody } from "@/features/templates/template-rules";
 import { can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
+import { readFlash } from "@/lib/http/flash";
 
 const TYPE_LABELS = { TRANSACTIONAL: "Transacional", PROMOTIONAL: "Promocional" } as const;
 
@@ -14,6 +15,7 @@ export default async function TemplatesPage({
 }) {
   const user = await requireUser();
   const params = await searchParams;
+  const flash = readFlash(params);
   const templates = await prisma.smsTemplate.findMany({
     orderBy: { updatedAt: "desc" },
     include: { createdBy: { select: { name: true } } },
@@ -34,7 +36,7 @@ export default async function TemplatesPage({
           </Link>
         ) : null}
       </div>
-      <Feedback success={params.success} error={params.error} />
+      <Feedback success={flash.success} error={flash.error} />
 
       <div className="mt-6 overflow-x-auto rounded-xl border border-slate-200 bg-white">
         <table className="w-full text-left text-sm">

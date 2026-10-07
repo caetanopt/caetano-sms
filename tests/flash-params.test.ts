@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
-import { FLASH_NONCE_PARAM, FLASH_PARAMS, flashUrl, urlWithoutFlashParams } from "@/lib/http/flash-params";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { FLASH_NONCE_PARAM, FLASH_PARAMS, urlWithoutFlashParams } from "@/lib/http/flash-params";
+import { flashUrl, readFlash } from "@/lib/http/flash";
 
 const BASE = "http://localhost:3000";
+const SECRET = "test-secret-with-at-least-32-characters!!";
 
 vi.mock("next/navigation", () => ({
   redirect: (url: string) => {
@@ -9,7 +11,11 @@ vi.mock("next/navigation", () => ({
   },
 }));
 
-async function redirectUrl(action: () => void): Promise<string> {
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+function redirectUrl(action: () => void): string {
   try {
     action();
   } catch (error) {
@@ -18,25 +24,11 @@ async function redirectUrl(action: () => void): Promise<string> {
   throw new Error("redirectWith não redirecionou");
 }
 
-describe("flashUrl", () => {
-  it("junta as mensagens e um nonce, mantendo a query existente", () => {
-    expect(flashUrl("/campaigns/abc", { success: "Rascunho criado." }, "n1")).toBe(
-      `/campaigns/abc?success=${encodeURIComponent("Rascunho criado.").replace(/%20/g, "+")}&f=n1`,
-    );
-    expect(flashUrl("/messages?status=FAILED", { error: "Falhou" }, "n2")).toBe("/messages?status=FAILED&error=Falhou&f=n2");
-    expect(flashUrl("/account/mfa", { notice: "recovery" }, "n3")).toBe("/account/mfa?notice=recovery&f=n3");
-  });
-
-  it("gera um nonce diferente em cada redirect (a mesma mensagem duas vezes tem URLs diferentes)", () => {
-    const a = new URL(flashUrl("/lists/x", { success: "Contacto adicionado à lista." }), BASE);
-    const b = new URL(flashUrl("/lists/x", { success: "Contacto adicionado à lista." }), BASE);
-    expect(a.searchParams.get(FLASH_NONCE_PARAM)).toMatch(/^[0-9a-f]{8}$/);
-    expect(a.searchParams.get(FLASH_NONCE_PARAM)).not.toBe(b.searchParams.get(FLASH_NONCE_PARAM));
-  });
-});
+const record = (url: string) => Object.fromEntries(new URL(url, BASE).searchParams);
 
 describe("urlWithoutFlashParams", () => {
-  it("remove mensagem e nonce e mantém o caminho", () => {
+  it("remove mensagem e parâmetro assinado e mantém o caminho", () => {
+    vi.stubEnv("AUTH_SECRET", SECRET);
     const href = `${BASE}${flashUrl("/campaigns/abc", { success: "Rascunho criado. Revê o resumo antes de confirmar." })}`;
     expect(urlWithoutFlashParams(href)).toBe("/campaigns/abc");
   });
@@ -56,14 +48,23 @@ describe("urlWithoutFlashParams", () => {
   });
 });
 
-describe("produtores de mensagens: tudo o que escrevem no URL é consumido", () => {
-  it("redirectWith só usa parâmetros de FLASH_PARAMS (e o URL fica limpo)", async () => {
+describe("redirectWith: tudo o que escreve no URL é verificável e consumido", () => {
+  it("só usa parâmetros de FLASH_PARAMS, a página aceita a mensagem e o URL fica limpo", async () => {
+    vi.stubEnv("AUTH_SECRET", SECRET);
     const { redirectWith } = await import("@/lib/http/redirect-with");
-    const url = await redirectUrl(() => redirectWith("/contacts?q=maria", { success: "Contacto criado.", error: "Aviso" }));
-    const params = new URL(url, BASE).searchParams;
-    const added = [...params.keys()].filter((key) => key !== "q");
+    const url = redirectUrl(() => redirectWith("/contacts?q=maria", { success: "Contacto criado.", error: "Aviso" }));
+    const added = [...new URL(url, BASE).searchParams.keys()].filter((key) => key !== "q");
     expect(added.every((key) => (FLASH_PARAMS as readonly string[]).includes(key))).toBe(true);
     expect(added).toEqual(expect.arrayContaining(["success", "error", FLASH_NONCE_PARAM]));
+    expect(readFlash(record(url))).toEqual({ success: "Contacto criado.", error: "Aviso" });
     expect(urlWithoutFlashParams(new URL(url, BASE).href)).toBe("/contacts?q=maria");
+  });
+
+  it("a mesma mensagem duas vezes gera URLs diferentes (nonce)", async () => {
+    vi.stubEnv("AUTH_SECRET", SECRET);
+    const { redirectWith } = await import("@/lib/http/redirect-with");
+    const a = redirectUrl(() => redirectWith("/lists/x", { success: "Contacto adicionado à lista." }));
+    const b = redirectUrl(() => redirectWith("/lists/x", { success: "Contacto adicionado à lista." }));
+    expect(a).not.toBe(b);
   });
 });

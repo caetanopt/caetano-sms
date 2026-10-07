@@ -10,6 +10,7 @@ import { getUserQuotaSnapshot } from "@/server/services/send-rate";
 import { can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
+import { readFlash } from "@/lib/http/flash";
 
 const dateTime = (value: Date | null) => (value ? value.toLocaleString("pt-PT", { timeZone: "Europe/Lisbon" }) : "—");
 const input = "mt-1 w-full rounded-lg border border-slate-300 px-3 py-2";
@@ -24,6 +25,7 @@ export default async function UserDetailPage({
   const actor = await requireUser();
   if (!can(actor.role, "users:manage")) redirect("/dashboard");
   const [{ id }, feedback] = await Promise.all([params, searchParams]);
+  const flash = readFlash(feedback);
   const user = await prisma.user.findUnique({
     where: { id },
     select: {
@@ -60,7 +62,7 @@ export default async function UserDetailPage({
         {user.email} · criado em {dateTime(user.createdAt)} · último início de sessão {dateTime(user.lastLoginAt)} ·
         palavra-passe alterada {dateTime(user.passwordChangedAt)}
       </p>
-      <Feedback success={feedback.success} error={feedback.error} />
+      <Feedback success={flash.success} error={flash.error} />
 
       <section className="mt-6 rounded-xl border border-slate-200 bg-white p-5">
         <h2 className="font-semibold">Dados e perfil</h2>

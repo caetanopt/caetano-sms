@@ -20,6 +20,7 @@ import { formatLisbon } from "@/lib/time/lisbon";
 import { reconcileCampaign, recipientCounts } from "@/server/services/campaigns/engine";
 import { campaignVariables, buildCampaignPreview } from "@/server/services/campaigns/preview";
 import { loadEditorData } from "../editor-data";
+import { readFlash } from "@/lib/http/flash";
 
 const card = "rounded-xl border border-slate-200 bg-white p-6";
 const PREVIEW_ROWS = 100;
@@ -46,6 +47,7 @@ export default async function CampaignDetailPage({
 }) {
   const user = await requireUser();
   const [{ id }, feedback] = await Promise.all([params, searchParams]);
+  const flash = readFlash(feedback);
   const campaign = await prisma.campaign.findUnique({
     where: { id },
     include: {
@@ -68,7 +70,7 @@ export default async function CampaignDetailPage({
       <p className="mt-1 text-sm text-slate-600">
         {campaignStatusLabel(campaign.status)} · criada por {campaign.createdBy.name} em {formatLisbon(campaign.createdAt)}
       </p>
-      <Feedback success={feedback.success} error={feedback.error} />
+      <Feedback success={flash.success} error={flash.error} />
     </>
   );
 

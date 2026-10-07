@@ -210,6 +210,24 @@ test("headers de segurança e prontidão", async ({ request }) => {
   expect(await ready.json()).toEqual({ status: "ok" });
 });
 
+test("mensagens forjadas no URL não são mostradas (phishing) e são limpas", async ({ page }) => {
+  const phishing = "A sua conta foi suspensa. Ligue para 912 345 678.";
+  const fakeSignature = "00000000.zzzzzz.AAAAAAAAAAAAAAAAAAAAAA";
+  for (const query of [`error=${encodeURIComponent(phishing)}`, `error=${encodeURIComponent(phishing)}&f=${fakeSignature}`]) {
+    await page.goto(`/login?${query}`);
+    await expect(page.getByRole("heading", { name: "Iniciar sessão" })).toBeVisible();
+    await expect(page).toHaveURL(/\/login$/);
+    await expect(page.getByText(phishing)).toHaveCount(0);
+  }
+
+  await login(page, E2E_ADMIN);
+  await page.goto(`/contacts?q=maria&success=${encodeURIComponent(phishing)}&f=${fakeSignature}`);
+  await expect(page.getByRole("heading", { name: "Contactos" })).toBeVisible();
+  await expect(page).toHaveURL(/\/contacts\?q=maria$/);
+  await expect(page.getByText(phishing)).toHaveCount(0);
+  await expect(page.locator("main [role=status]")).toHaveCount(0);
+});
+
 test("ícones da marca servidos sem sessão e anunciados no head", async ({ page, request }) => {
   await page.goto("/login");
   const svgIcon = page.locator('head link[rel="icon"][type="image/svg+xml"]');

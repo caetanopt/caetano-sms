@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { mfaRequiredFor } from "@/features/auth/mfa-policy";
 import { prisma } from "@/lib/db/prisma";
-import { flashUrl } from "@/lib/http/flash-params";
+import { flashUrl } from "@/lib/http/flash";
 
 const COOKIE_NAME = "sms_session";
 const SESSION_HOURS = 8;

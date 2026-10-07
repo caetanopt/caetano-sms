@@ -5,6 +5,7 @@ import { can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { getListEligibility } from "@/server/services/lists";
+import { readFlash } from "@/lib/http/flash";
 
 const inputClass = "mt-1 w-full rounded-lg border border-slate-300 px-3 py-2";
 
@@ -15,6 +16,7 @@ export default async function ListsPage({
 }) {
   const user = await requireUser();
   const params = await searchParams;
+  const flash = readFlash(params);
   const lists = await prisma.contactList.findMany({ orderBy: { name: "asc" } });
   const eligibility = await Promise.all(lists.map((list) => getListEligibility(list.id)));
   const canWrite = can(user.role, "lists:write");
@@ -25,7 +27,7 @@ export default async function ListsPage({
       <p className="mt-2 text-slate-600">
         Grupos de contactos. Só os contactos com opt-in e sem opt-out são elegíveis para campanhas.
       </p>
-      <Feedback success={params.success} error={params.error} />
+      <Feedback success={flash.success} error={flash.error} />
 
       <div className={`mt-6 grid gap-6 ${canWrite ? "lg:grid-cols-[360px_1fr]" : ""}`}>
         {canWrite ? (

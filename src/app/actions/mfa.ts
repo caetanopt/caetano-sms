@@ -7,7 +7,7 @@ import { clientIpFromHeaders } from "@/features/auth/login-throttle";
 import type { MfaFormState } from "@/features/auth/mfa-form-state";
 import { clearMfaPending, readMfaPending } from "@/lib/auth/mfa-pending";
 import { createSession, requireUser } from "@/lib/auth/session";
-import { flashUrl } from "@/lib/http/flash-params";
+import { flashUrl } from "@/lib/http/flash";
 import { redirectWith } from "@/lib/http/redirect-with";
 import {
   completeMfaLogin,

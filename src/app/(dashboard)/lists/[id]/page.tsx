@@ -10,6 +10,7 @@ import { prisma } from "@/lib/db/prisma";
 import { parsePage } from "@/lib/http/search-params";
 import { maskPhoneNumber } from "@/lib/phone/normalize";
 import { getListEligibility } from "@/server/services/lists";
+import { readFlash } from "@/lib/http/flash";
 
 const PAGE_SIZE = 50;
 const inputClass = "mt-1 w-full rounded-lg border border-slate-300 px-3 py-2";
@@ -23,6 +24,7 @@ export default async function ListDetailPage({
 }) {
   const user = await requireUser();
   const [{ id }, query] = await Promise.all([params, searchParams]);
+  const flash = readFlash(query);
   const page = parsePage(query.page);
 
   const list = await prisma.contactList.findUnique({ where: { id } });
@@ -45,7 +47,7 @@ export default async function ListDetailPage({
       <Link href="/lists" className="text-sm text-slate-600 hover:underline">← Listas</Link>
       <h1 className="mt-2 text-3xl font-bold">{list.name}</h1>
       {list.description ? <p className="mt-1 text-slate-600">{list.description}</p> : null}
-      <Feedback success={query.success} error={query.error} />
+      <Feedback success={flash.success} error={flash.error} />
 
       <dl className="mt-6 grid gap-3 sm:grid-cols-4">
         {([

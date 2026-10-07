@@ -5,6 +5,7 @@ import { can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { formatLisbon } from "@/lib/time/lisbon";
+import { readFlash } from "@/lib/http/flash";
 
 export default async function CampaignsPage({
   searchParams,
@@ -13,6 +14,7 @@ export default async function CampaignsPage({
 }) {
   const user = await requireUser();
   const params = await searchParams;
+  const flash = readFlash(params);
   const campaigns = await prisma.campaign.findMany({
     orderBy: { createdAt: "desc" },
     take: 100,
@@ -44,7 +46,7 @@ export default async function CampaignsPage({
           </Link>
         ) : null}
       </div>
-      <Feedback success={params.success} error={params.error} />
+      <Feedback success={flash.success} error={flash.error} />
 
       <div className="mt-6 overflow-x-auto rounded-xl border border-slate-200 bg-white">
         <table className="w-full text-left text-sm">

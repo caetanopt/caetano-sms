@@ -7,6 +7,7 @@ import { QrCode } from "@/components/mfa/qr-code";
 import { requireUser } from "@/lib/auth/session";
 import { formatLisbon } from "@/lib/time/lisbon";
 import { getMfaStatus } from "@/server/services/mfa";
+import { readFlash } from "@/lib/http/flash";
 
 /** Fora do layout (dashboard): acessível quando o 2FA ainda é obrigatório e está por configurar. */
 export default async function MfaPage({
@@ -16,6 +17,7 @@ export default async function MfaPage({
 }) {
   const user = await requireUser({ allowMfaSetup: true });
   const params = await searchParams;
+  const flash = readFlash(params);
   const status = await getMfaStatus(user.id);
 
   return (
@@ -25,13 +27,13 @@ export default async function MfaPage({
             Os administradores têm de usar 2FA. Configura-o para continuar.
           </div>
         ) : null}
-        {params.notice === "recovery" ? (
+        {flash.notice === "recovery" ? (
           <div role="alert" className="mt-5 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
             Entraste com um código de recuperação (já não pode ser usado de novo). Se perdeste o telemóvel, considera pedir a
             reposição do 2FA ou gera novos códigos.
           </div>
         ) : null}
-        <Feedback error={params.error} />
+        <Feedback error={flash.error} />
         <div className="mt-6">
           {status ? (
             <MfaPanel
