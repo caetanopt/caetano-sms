@@ -363,7 +363,8 @@ com telefone mascarado e sem o texto da mensagem.
   de links guardados. Mudar `AUTH_SECRET` invalida apenas as mensagens em trânsito.
 - **Dependências**: `pnpm audit:deps` (corre `pnpm audit` e o guarda dos advisories aceites).
   Overrides em `pnpm-workspace.yaml` para dependências transitivas (CLI do Prisma; `source-map-js`
-  abaixo de 1.2.2 redirecionado para `^1.2.2`). Advisories aceites conscientemente ficam em
+  abaixo de 1.2.2 redirecionado para `^1.2.2`; `sharp` do Next abaixo de 0.35.5 redirecionado para
+  `^0.35.5`, CVE-2026-96889 na librsvg). Advisories aceites conscientemente ficam em
   `audit.ignore`, cada um justificado em `scripts/check-audit-ignores.ts`. O pnpm ignora o GHSA em
   todos os caminhos, por isso o guarda faz falhar o comando se o pacote afetado entrar na árvore
   de produção ou se surgir um GHSA ignorado sem justificação. Hoje só GHSA-vfj7-8cjw-p6xm

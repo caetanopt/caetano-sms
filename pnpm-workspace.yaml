@@ -12,6 +12,9 @@ overrides:
   # GHSA-68fv-2mgg-jv7q (DoS em source maps indexados): via postcss (next, @tailwindcss/postcss,
   # vite) e diretamente via @tailwindcss/node. Só a gama vulnerável é redirecionada.
   "source-map-js@<1.2.2": "^1.2.2"
+  # GHSA-wq5f-xc86-pv6w / CVE-2026-96889 (librsvg no sharp): via next (otimização de imagens),
+  # que aceita ^0.35.4. Só a gama vulnerável é redirecionada.
+  "sharp@<0.35.5": "^0.35.5"
 
 # Advisories aceites conscientemente: o pnpm ignora o GHSA em todos os caminhos, por isso cada
 # entrada tem de estar justificada em scripts/check-audit-ignores.ts, que falha se o pacote
