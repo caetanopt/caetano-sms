@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { cookies, headers } from "next/headers";
+import { hostCookieName, hostCookieOptions } from "./host-cookies";
 import { FLASH_MESSAGE_PARAMS, FLASH_NONCE_PARAM, type FlashMessages } from "./flash-params";
 
 /**
@@ -39,20 +40,16 @@ const SIGNATURE = /^[A-Za-z0-9_-]{22}$/;
 const BINDING = /^[A-Za-z0-9_-]{22}$/;
 const FLASH_COOKIE_MAX_AGE = 30 * 24 * 60 * 60;
 
-function secureCookies(): boolean {
-  return process.env.NODE_ENV === "production";
-}
-
 /**
  * Cookie que liga as mensagens ao browser (não é a sessão de login: existe também no /login).
- * `__Host-` exige Secure, Path=/ e nenhum Domain; em desenvolvimento (http) usa-se o nome simples.
+ * `__Host-sms_flash_bid` em produção (ver `host-cookies.ts`).
  */
 export function flashCookieName(): string {
-  return secureCookies() ? "__Host-sms_flash_bid" : "sms_flash_bid";
+  return hostCookieName("sms_flash_bid");
 }
 
 function flashCookieOptions(maxAge = FLASH_COOKIE_MAX_AGE) {
-  return { httpOnly: true, secure: secureCookies(), sameSite: "lax" as const, path: "/", maxAge };
+  return hostCookieOptions({ sameSite: "lax", maxAge });
 }
 
 let derivedKey: { source: string; key: Buffer } | null = null;

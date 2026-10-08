@@ -1,11 +1,13 @@
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
+import { deleteHostCookie, hostCookieName, hostCookieOptions } from "@/lib/http/host-cookies";
 
 /**
  * Passo intermédio do login com 2FA: a palavra-passe foi validada mas a sessão ainda não
  * existe. Cookie HttpOnly de curta duração, assinado e ligado à versão de sessão.
  */
-const COOKIE_NAME = "sms_mfa_pending";
+/** `__Host-sms_mfa_pending` em produção (ver `host-cookies.ts`). */
+const MFA_PENDING_COOKIE = "sms_mfa_pending";
 export const MFA_PENDING_MINUTES = 5;
 
 function secret() {
@@ -24,17 +26,11 @@ export async function createMfaPending(pending: MfaPending) {
     .setExpirationTime(`${MFA_PENDING_MINUTES}m`)
     .sign(secret());
   const jar = await cookies();
-  jar.set(COOKIE_NAME, token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    path: "/",
-    maxAge: MFA_PENDING_MINUTES * 60,
-  });
+  jar.set(hostCookieName(MFA_PENDING_COOKIE), token, hostCookieOptions({ sameSite: "strict", maxAge: MFA_PENDING_MINUTES * 60 }));
 }
 
 export async function readMfaPending(): Promise<MfaPending | null> {
-  const token = (await cookies()).get(COOKIE_NAME)?.value;
+  const token = (await cookies()).get(hostCookieName(MFA_PENDING_COOKIE))?.value;
   if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, secret());
@@ -47,5 +43,5 @@ export async function readMfaPending(): Promise<MfaPending | null> {
 }
 
 export async function clearMfaPending() {
-  (await cookies()).delete(COOKIE_NAME);
+  await deleteHostCookie(MFA_PENDING_COOKIE, "strict");
 }

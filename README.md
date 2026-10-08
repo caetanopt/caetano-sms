@@ -345,6 +345,13 @@ com telefone mascarado e sem o texto da mensagem.
 
 - **Headers**: CSP (`frame-ancestors 'none'`, sem recursos externos), `X-Frame-Options: DENY`,
   `nosniff`, `Referrer-Policy`, `Permissions-Policy`, HSTS em produção (`src/lib/http/security-headers.ts`).
+- **Cookies**: os três cookies da aplicação (sessão `sms_session`, passo intermédio do 2FA
+  `sms_mfa_pending` e mensagens `sms_flash_bid`) são HttpOnly e, em produção, têm o prefixo
+  **`__Host-`** (Secure, Path=/, sem Domain; `src/lib/http/host-cookies.ts`). O browser recusa
+  versões com Domain, pelo que outro subdomínio da empresa (ex.: um site comprometido em
+  `*.empresa.pt`) não consegue plantar cookies seus — por exemplo, deixar alguém com sessão
+  iniciada na conta de quem ataca ("cookie tossing"). A remoção (logout) usa os mesmos atributos.
+  Um teste falha se algum código escrever cookies fora destes módulos ou sem estes atributos.
 - **Login**: bloqueio após 5 falhas por email ou 20 por IP em 15 min; tempo constante para contas
   inexistentes; mensagens que não revelam se a conta existe; auditoria `LOGIN_*` com IP. Email e IP
   guardados só como HMAC. O IP só é lido de `X-Forwarded-For` com `TRUST_PROXY=true` (atrás de proxy
@@ -541,6 +548,10 @@ pnpm retention --apply            # cron diário, depois de validados os prazos
 - Variáveis obrigatórias: `DATABASE_URL`, `AUTH_SECRET` (≥32 caracteres, segredo), `NODE_ENV=production`,
   `SMS_PROVIDER`, `AWS_SMS_DRY_RUN` (explícito), `AWS_REGION`, `AWS_SMS_ORIGINATION_IDENTITY`,
   `AWS_SMS_CONFIGURATION_SET`, `AWS_SMS_PROTECT_CONFIGURATION_ID`; opcionais as de eventos e limites.
+- **Cookies `__Host-` (a partir desta versão)**: no primeiro deploy com o prefixo, as sessões
+  abertas deixam de ser reconhecidas — todos os utilizadores voltam a iniciar sessão uma vez (os
+  cookies antigos sem prefixo são ignorados e apagados no login/logout seguinte). A aplicação tem de
+  ser servida por HTTPS (o prefixo exige Secure).
 - Health checks: `GET /api/health` (liveness, sem dependências) e `GET /api/health/ready`
   (verifica a base de dados; 503 se indisponível). Nenhum envia SMS.
 - Backups diários do PostgreSQL com retenção alinhada com a política acima; testar restauros.

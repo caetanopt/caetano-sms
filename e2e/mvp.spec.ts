@@ -281,6 +281,27 @@ test("uma mensagem assinada noutro browser não é mostrada (ligação à sessã
   await attackerContext.close();
 });
 
+test("cookies de sessão e de 2FA pendente: __Host-, Secure, HttpOnly; removidos no logout", async ({ page, context }) => {
+  const named = async (name: string) => (await context.cookies()).find((cookie) => cookie.name === name);
+  await login(page, E2E_VIEWER);
+  // O servidor E2E corre em modo de produção: só existem as versões com prefixo.
+  expect(await named("__Host-sms_session")).toMatchObject({ secure: true, httpOnly: true, sameSite: "Lax", path: "/" });
+  expect(await named("sms_session")).toBeUndefined();
+  await page.getByRole("button", { name: "Sair" }).click();
+  await page.waitForURL("**/login");
+  expect(await named("__Host-sms_session")).toBeUndefined();
+  await page.goto("/dashboard");
+  await expect(page).toHaveURL(/\/login/);
+
+  // Passo intermédio do 2FA (palavra-passe validada, sessão ainda não criada).
+  await page.fill("input[name=email]", E2E_ADMIN.email);
+  await page.fill("input[name=password]", E2E_ADMIN.password);
+  await page.click("button");
+  await page.waitForURL("**/login/mfa");
+  expect(await named("__Host-sms_mfa_pending")).toMatchObject({ secure: true, httpOnly: true, sameSite: "Strict", path: "/" });
+  expect(await named("sms_mfa_pending")).toBeUndefined();
+});
+
 test("cookie de mensagens: __Host-, Secure e HttpOnly; renovado no login e removido no logout", async ({ page, context }) => {
   const flashCookie = async () => (await context.cookies()).find((cookie) => cookie.name.endsWith("sms_flash_bid"));
   await page.goto("/login");

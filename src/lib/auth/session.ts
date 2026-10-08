@@ -4,8 +4,10 @@ import { redirect } from "next/navigation";
 import { mfaRequiredFor } from "@/features/auth/mfa-policy";
 import { prisma } from "@/lib/db/prisma";
 import { clearFlashCookie, flashUrl, rotateFlashCookie } from "@/lib/http/flash";
+import { deleteHostCookie, deleteLegacyCookie, hostCookieName, hostCookieOptions } from "@/lib/http/host-cookies";
 
-const COOKIE_NAME = "sms_session";
+/** `__Host-sms_session` em produção (ver `host-cookies.ts`). */
+const SESSION_COOKIE = "sms_session";
 const SESSION_HOURS = 8;
 
 export type SessionClaims = {
@@ -42,26 +44,21 @@ export async function createSession(claims: SessionClaims) {
     .sign(secret());
 
   const jar = await cookies();
-  jar.set(COOKIE_NAME, token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    maxAge: SESSION_HOURS * 60 * 60,
-  });
+  jar.set(hostCookieName(SESSION_COOKIE), token, hostCookieOptions({ sameSite: "lax", maxAge: SESSION_HOURS * 60 * 60 }));
+  await deleteLegacyCookie(SESSION_COOKIE);
   // Cookie de mensagens novo a cada login (ver rotateFlashCookie).
   await rotateFlashCookie();
 }
 
 export async function destroySession() {
-  const jar = await cookies();
-  jar.delete(COOKIE_NAME);
+  await deleteHostCookie(SESSION_COOKIE, "lax");
+  await deleteLegacyCookie(SESSION_COOKIE);
   await clearFlashCookie();
 }
 
 export async function readSession(): Promise<SessionClaims | null> {
   const jar = await cookies();
-  const token = jar.get(COOKIE_NAME)?.value;
+  const token = jar.get(hostCookieName(SESSION_COOKIE))?.value;
   if (!token) return null;
 
   try {
