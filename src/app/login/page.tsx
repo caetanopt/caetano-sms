@@ -7,7 +7,7 @@ import { readFlash } from "@/lib/http/flash";
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; success?: string }>;
 }) {
   // Sessão inválida (versão antiga, conta desativada) não conta: evita ciclo de redirecionamentos.
   if (await getCurrentUser()) redirect("/dashboard");
@@ -18,6 +18,9 @@ export default async function LoginPage({
     <AuthLayout title="Iniciar sessão" subtitle="Acesso reservado a utilizadores autorizados.">
       {flash.error ? (
         <div role="alert" className="mt-5 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{flash.error}</div>
+      ) : null}
+      {flash.success ? (
+        <div role="status" className="mt-5 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{flash.success}</div>
       ) : null}
 
       <form action={loginAction} className="mt-6 space-y-4">

@@ -5,6 +5,8 @@ export const E2E_ADMIN = { email: "e2e-admin@example.com", password: "e2e-admin-
 export const E2E_VIEWER = { email: "e2e-viewer@example.com", password: "e2e-viewer-password-123" };
 /** Operador sem 2FA: usado nos testes de quota por utilizador. */
 export const E2E_OPERATOR = { email: "e2e-operator@example.com", password: "e2e-operator-password-123" };
+/** Leitor só para os testes de logout em todos os dispositivos (não afeta as sessões em cache dos outros). */
+export const E2E_SESSIONS = { email: "e2e-sessions@example.com", password: "e2e-sessions-password-123" };
 /** Segredo TOTP do administrador E2E (2FA é obrigatório para ADMIN). Só para testes. */
 export const E2E_ADMIN_TOTP_SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
 
@@ -25,6 +27,7 @@ export default async function globalSetup() {
     [E2E_ADMIN, "ADMIN", "Admin E2E"],
     [E2E_VIEWER, "VIEWER", "Leitor E2E"],
     [E2E_OPERATOR, "OPERATOR", "Operador E2E"],
+    [E2E_SESSIONS, "VIEWER", "Sessões E2E"],
   ] as const) {
     await prisma.user.create({
       data: {

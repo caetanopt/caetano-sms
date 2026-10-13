@@ -354,13 +354,18 @@ com telefone mascarado e sem o texto da mensagem.
   Um teste estático falha se outro módulo importar/usar `cookies()` de `next/headers`, se houver
   escritas por `NextResponse.cookies` ou `Set-Cookie` em bruto, opções de cookie fora do helper, ou
   escritas sem os atributos do prefixo (é uma verificação por linhas, não uma garantia formal).
-- **Logout**: termina **só a sessão deste dispositivo** — além de apagar os cookies, revoga o token
-  no servidor pelo seu identificador (`jti`, tabela `RevokedSession`; auditado `LOGOUT`): uma cópia
-  do token obtida antes do logout deixa de servir, e as sessões do mesmo utilizador noutros
-  dispositivos mantêm-se. Terminar **todas** as sessões continua a ser feito pelas ações de
-  administração (desativar, mudar perfil, repor palavra-passe ou 2FA → `sessionVersion`). As
-  revogações expiradas são removidas por `pnpm retention --apply`. O passo intermédio do 2FA é
-  limpo no logout e em qualquer novo login.
+- **Logout**: «Sair» termina **só a sessão deste dispositivo** — além de apagar os cookies, revoga o
+  token no servidor pelo seu identificador (`jti`, tabela `RevokedSession`; auditado `LOGOUT`
+  `{scope:"device"}`, com `sessionValid:false` quando o token já estava inválido, ex.: conta
+  desativada): uma cópia do token obtida antes do logout deixa de servir, e as sessões do mesmo
+  utilizador noutros dispositivos mantêm-se. Um novo login no mesmo browser revoga também o token
+  que este tinha (ex.: login repetido num separador antigo). Se a revogação falhar (base de dados
+  indisponível), os cookies são apagados na mesma e o utilizador é avisado. **«Sair de todos os
+  dispositivos»** (em `/account/password`) termina todas as sessões do próprio utilizador
+  (`sessionVersion`; auditado `LOGOUT` `{scope:"all"}`), tal como as ações de administração
+  (desativar, mudar perfil, repor palavra-passe ou 2FA) e alterar a própria palavra-passe ou
+  ativar/desativar o 2FA (estes mantêm a sessão atual). As revogações expiradas são removidas por
+  `pnpm retention --apply`. O passo intermédio do 2FA é limpo no logout e em qualquer novo login.
 - **Login**: bloqueio após 5 falhas por email ou 20 por IP em 15 min; tempo constante para contas
   inexistentes; mensagens que não revelam se a conta existe; auditoria `LOGIN_*` com IP. Email e IP
   guardados só como HMAC. O IP só é lido de `X-Forwarded-For` com `TRUST_PROXY=true` (atrás de proxy
@@ -457,6 +462,11 @@ compatível com Google/Microsoft Authenticator, 1Password, Bitwarden, etc. O TOT
 | `DELIVERY_EVENT_RETENTION_DAYS` | 365 | eventos de entrega apagados |
 | `LOGIN_ATTEMPT_RETENTION_DAYS` | 30 | tentativas de login apagadas |
 | `AUDIT_IP_RETENTION_DAYS` | 90 | IP removido dos registos de auditoria (o registo mantém-se) |
+| — | 1 h após expirar | revogações de sessão (`RevokedSession`: utilizador e hora do logout) apagadas quando o token (8 h) já expirou; a margem cobre relógios diferentes entre máquinas |
+
+Enquanto o comando não estiver agendado, a tabela `RevokedSession` cresce uma linha pequena por
+logout/novo login, sem efeito na segurança (só mantém recusados tokens que já expiraram). Não há
+opção para aplicar só esta limpeza: não antecipar o agendamento por causa dela.
 
 ### Fila SQS
 
@@ -568,7 +578,11 @@ pnpm retention --apply            # cron diário, depois de validados os prazos
   `UPDATE "User" SET "sessionVersion" = "sessionVersion" + 1;` (todos voltam a iniciar sessão).
   A mesma versão introduz o logout por dispositivo (migração `RevokedSession`, aplicada por
   `pnpm prisma migrate deploy`): tokens emitidos antes, sem `jti`, são recusados — coincide com o
-  novo login já exigido pelo prefixo.
+  novo login já exigido pelo prefixo. **Rollback** para uma versão anterior ao logout por
+  dispositivo: essa versão não lê `RevokedSession`, pelo que tokens terminados com «Sair» voltariam
+  a ser aceites até expirarem (até 8 h). Depois de o rollback estar completo (nenhuma instância
+  nova a servir), executar `UPDATE "User" SET "sessionVersion" = "sessionVersion" + 1;` (todos
+  voltam a iniciar sessão).
 - Health checks: `GET /api/health` (liveness, sem dependências) e `GET /api/health/ready`
   (verifica a base de dados; 503 se indisponível). Nenhum envia SMS.
 - Backups diários do PostgreSQL com retenção alinhada com a política acima; testar restauros.

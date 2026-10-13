@@ -8,11 +8,17 @@ export type RetentionReport = {
   deliveryEventsToDelete: number;
   loginAttemptsToDelete: number;
   auditIpsToClear: number;
-  /** Revogações de sessão (logout) cujo token já expirou: deixaram de ser necessárias. */
+  /** Revogações de sessão (logout) cujo token expirou há mais de 1 h: deixaram de ser necessárias. */
   revokedSessionsToDelete: number;
 };
 
 const BATCH = 500;
+/**
+ * Uma revogação só é apagada 1 h depois de o token expirar: se o relógio da máquina que corre a
+ * retenção estiver adiantado em relação a uma instância da aplicação, apagar no instante exato
+ * reativaria por momentos um token revogado que essa instância ainda considera válido.
+ */
+const REVOKED_SESSION_GRACE_MS = 60 * 60_000;
 
 /**
  * Aplica (ou simula, por defeito) a política de retenção. Idempotente.
@@ -29,7 +35,7 @@ export async function runRetention(policy: RetentionPolicy, options: { apply: bo
   const eventsWhere = { createdAt: { lt: cutoff(now, policy.deliveryEventDays) } };
   const loginWhere = { createdAt: { lt: cutoff(now, policy.loginAttemptDays) } };
   const auditWhere = { ipAddress: { not: null }, createdAt: { lt: cutoff(now, policy.auditIpDays) } };
-  const revokedWhere = { expiresAt: { lt: now } };
+  const revokedWhere = { expiresAt: { lt: new Date(now.getTime() - REVOKED_SESSION_GRACE_MS) } };
 
   const report: RetentionReport = {
     apply: options.apply,

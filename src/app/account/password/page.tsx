@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { logoutAction } from "@/app/actions/auth";
+import { logoutAction, logoutAllAction } from "@/app/actions/auth";
 import { AuthLayout } from "@/components/auth-layout";
 import { ChangePasswordForm } from "@/components/users/change-password-form";
 import { MIN_PASSWORD_LENGTH } from "@/features/auth/password-policy";
@@ -28,6 +28,18 @@ export default async function ChangePasswordPage({
           </div>
         ) : null}
         <ChangePasswordForm minLength={MIN_PASSWORD_LENGTH} />
+        <section aria-labelledby="sessions-heading" className="mt-8 border-t border-slate-200 pt-6">
+          <h2 id="sessions-heading" className="text-sm font-semibold text-brand-deep">Sessões</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            «Sair» termina só a sessão neste browser. Se te esqueceste de sair noutro computador, termina a sessão em todos os
+            dispositivos, incluindo este.
+          </p>
+          <form action={logoutAllAction} className="mt-3">
+            <button className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-brand-deep hover:border-brand-deep/30 hover:bg-slate-50">
+              Sair de todos os dispositivos
+            </button>
+          </form>
+        </section>
         <div className="mt-6 flex justify-between text-sm">
           {user.mustChangePassword ? <span /> : <Link href="/dashboard" className="text-slate-600 hover:underline">← Voltar</Link>}
           <form action={logoutAction}>

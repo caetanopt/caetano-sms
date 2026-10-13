@@ -7,10 +7,13 @@ import { clearMfaPending } from "@/lib/auth/mfa-pending";
 import { prisma } from "@/lib/db/prisma";
 import { clearFlashCookie, flashUrl, rotateFlashCookie } from "@/lib/http/flash";
 import { deleteHostCookie, deleteLegacyCookie, hostCookieName, hostCookieOptions } from "@/lib/http/host-cookies";
+import { consoleLogger } from "@/lib/logging/logger";
 
 /** `__Host-sms_session` em produção (ver `host-cookies.ts`). */
 const SESSION_COOKIE = "sms_session";
 const SESSION_HOURS = 8;
+/** Campos do utilizador que decidem se um token ainda é válido (ver `sessionMatchesUser`). */
+const SESSION_CHECK_FIELDS = { isActive: true, sessionVersion: true, totpEnabledAt: true } as const;
 
 export type SessionClaims = {
   userId: string;
@@ -49,6 +52,14 @@ export async function createSession(claims: SessionClaims) {
     .setExpirationTime(`${SESSION_HOURS}h`)
     .sign(secret());
 
+  // O token que este browser tinha deixa de servir (ex.: login repetido num separador antigo, ou
+  // outra pessoa no mesmo computador). Sem isto, o logout seguinte só revogaria o token novo e uma
+  // cópia do anterior continuaria válida. Lido antes de escrever o cookie novo.
+  const previous = await readSession();
+  if (previous) {
+    await prisma.revokedSession.createMany({ data: [revocationOf(previous)], skipDuplicates: true });
+  }
+
   const jar = await cookies();
   jar.set(hostCookieName(SESSION_COOKIE), token, hostCookieOptions({ sameSite: "lax", maxAge: SESSION_HOURS * 60 * 60 }));
   await deleteLegacyCookie(SESSION_COOKIE);
@@ -58,29 +69,91 @@ export async function createSession(claims: SessionClaims) {
   await rotateFlashCookie();
 }
 
+function revocationOf(session: ActiveSession) {
+  return { jti: session.jti, userId: session.userId, expiresAt: session.expiresAt };
+}
+
 /**
  * Logout deste dispositivo: revoga o token atual no servidor (pelo `jti`) e apaga os cookies. O
  * token é stateless (JWT de 8 h): sem revogação, uma cópia obtida antes do logout (computador
  * partilhado, cópia do perfil do browser) continuaria válida. As outras sessões do utilizador
- * mantêm-se; terminar todas é feito pelas ações de administração (`sessionVersion`).
+ * mantêm-se; para as terminar todas, ver `destroyAllSessions`.
+ *
+ * Os cookies são apagados mesmo que a revogação falhe (ex.: base de dados indisponível): num
+ * computador partilhado, a sessão não pode ficar no browser só porque o servidor falhou. Nesse
+ * caso devolve `revocationFailed` para avisar o utilizador.
  */
-export async function destroySession() {
+export async function destroySession(): Promise<{ revocationFailed: boolean }> {
   const session = await readSession();
+  let revocationFailed = false;
   if (session) {
-    const { count } = await prisma.revokedSession.createMany({
-      data: [{ jti: session.jti, userId: session.userId, expiresAt: session.expiresAt }],
-      skipDuplicates: true,
-    });
-    if (count === 1) {
-      await prisma.auditLog.create({
-        data: { userId: session.userId, action: "LOGOUT", entityType: "User", entityId: session.userId, metadataJson: { scope: "device" } },
-      });
+    try {
+      await revokeSession(session);
+    } catch (error) {
+      revocationFailed = true;
+      consoleLogger.log("error", "auth.logout.revocation_failed", { userId: session.userId, errorCode: errorCodeOf(error) });
     }
   }
+  await clearSessionCookies();
+  return { revocationFailed };
+}
+
+/** Revogação e auditoria na mesma transação: um registo LOGOUT nunca se perde numa repetição. */
+async function revokeSession(session: ActiveSession) {
+  await prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: session.userId }, select: SESSION_CHECK_FIELDS });
+    const { count } = await tx.revokedSession.createMany({ data: [revocationOf(session)], skipDuplicates: true });
+    if (count === 0) return; // já revogada (logout repetido com o mesmo token)
+    await tx.auditLog.create({
+      data: {
+        // Sem utilizador (apagado diretamente na base de dados), a auditoria não pode falhar pela FK.
+        userId: user ? session.userId : null,
+        action: "LOGOUT",
+        entityType: "User",
+        entityId: session.userId,
+        // Token já inválido (conta desativada, palavra-passe reposta…): fica registado, mas assinalado.
+        metadataJson: sessionMatchesUser(session, user) ? { scope: "device" } : { scope: "device", sessionValid: false },
+      },
+    });
+  });
+}
+
+/**
+ * Logout em todos os dispositivos (pedido pelo próprio utilizador): incrementar `sessionVersion`
+ * invalida todos os tokens já emitidos, incluindo cópias e sessões esquecidas noutro computador,
+ * e apaga os cookies deste browser. Só uma sessão válida o pode pedir: um token antigo ou revogado
+ * não termina as sessões atuais de ninguém. Se a base de dados falhar, o erro propaga-se e os
+ * cookies ficam (o utilizador vê o erro e pode tentar de novo).
+ */
+export async function destroyAllSessions(): Promise<void> {
+  const session = await readSession();
+  if (session && (await getCurrentUser())) {
+    await prisma.$transaction(async (tx) => {
+      const { count } = await tx.user.updateMany({
+        where: { id: session.userId, sessionVersion: session.sessionVersion },
+        data: { sessionVersion: { increment: 1 } },
+      });
+      if (count === 1) {
+        await tx.auditLog.create({
+          data: { userId: session.userId, action: "LOGOUT", entityType: "User", entityId: session.userId, metadataJson: { scope: "all" } },
+        });
+      }
+    });
+  }
+  await clearSessionCookies();
+}
+
+async function clearSessionCookies() {
   await deleteHostCookie(SESSION_COOKIE, "lax");
   await deleteLegacyCookie(SESSION_COOKIE);
   await clearMfaPending();
   await clearFlashCookie();
+}
+
+/** Código do erro para o log (ex.: código Prisma), sem mensagem nem detalhes. */
+function errorCodeOf(error: unknown): string {
+  if (error && typeof error === "object" && "code" in error && typeof error.code === "string") return error.code;
+  return error instanceof Error ? error.name : "UNKNOWN";
 }
 
 export async function readSession(): Promise<ActiveSession | null> {
@@ -128,17 +201,18 @@ export type CurrentUser = {
 function findSessionUser(userId: string) {
   return prisma.user.findUnique({
     where: { id: userId },
-    select: {
-      id: true,
-      name: true,
-      email: true,
-      role: true,
-      isActive: true,
-      sessionVersion: true,
-      mustChangePassword: true,
-      totpEnabledAt: true,
-    },
+    select: { ...SESSION_CHECK_FIELDS, id: true, name: true, email: true, role: true, mustChangePassword: true },
   });
+}
+
+/** O token ainda corresponde ao utilizador: conta ativa, mesma versão de sessão e 2FA coerente. */
+function sessionMatchesUser(
+  session: ActiveSession,
+  user: { isActive: boolean; sessionVersion: number; totpEnabledAt: Date | null } | null,
+): boolean {
+  if (!user?.isActive || user.sessionVersion !== session.sessionVersion) return false;
+  // Com 2FA ativo, uma sessão sem segundo fator nunca é válida.
+  return user.totpEnabledAt === null || session.mfa === true;
 }
 
 export async function getCurrentUser(): Promise<CurrentUser | null> {
@@ -150,10 +224,8 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
   ]);
   // Sessão terminada com logout neste dispositivo (uma cópia do token deixa de servir).
   if (revoked) return null;
-  if (!user?.isActive || user.sessionVersion !== session.sessionVersion) return null;
+  if (!user || !sessionMatchesUser(session, user)) return null;
   const mfaEnabled = user.totpEnabledAt !== null;
-  // Com 2FA ativo, uma sessão sem segundo fator nunca é válida.
-  if (mfaEnabled && !session.mfa) return null;
   return {
     id: user.id,
     name: user.name,

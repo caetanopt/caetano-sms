@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { clientIpFromHeaders } from "@/features/auth/login-throttle";
 import { createMfaPending } from "@/lib/auth/mfa-pending";
-import { createSession, destroySession } from "@/lib/auth/session";
+import { createSession, destroyAllSessions, destroySession, requireUser } from "@/lib/auth/session";
 import { redirectWith } from "@/lib/http/redirect-with";
 import { attemptLogin } from "@/server/services/login";
 
@@ -50,6 +50,19 @@ export async function loginAction(formData: FormData) {
 }
 
 export async function logoutAction() {
-  await destroySession();
+  const { revocationFailed } = await destroySession();
+  // O browser já não tem a sessão, mas uma cópia do token pode continuar válida: avisar.
+  if (revocationFailed) {
+    return redirectWith("/login", {
+      error: "Saíste neste browser, mas o servidor não confirmou o fim da sessão. Quando possível, entra e usa «Sair de todos os dispositivos».",
+    });
+  }
   redirect("/login");
+}
+
+/** Termina todas as sessões do próprio utilizador (ex.: esqueceu-se de sair noutro computador). */
+export async function logoutAllAction() {
+  await requireUser({ allowPasswordChange: true, allowMfaSetup: true });
+  await destroyAllSessions();
+  return redirectWith("/login", { success: "Sessão terminada em todos os dispositivos." });
 }

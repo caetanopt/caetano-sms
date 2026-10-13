@@ -16,7 +16,7 @@ vi.mock("next/headers", () => ({
   }),
 }));
 process.env.AUTH_SECRET ??= "integration-test-secret-with-at-least-32-chars";
-const { createSession, destroySession, getCurrentUser } = await import("@/lib/auth/session");
+const { createSession, destroyAllSessions, destroySession, getCurrentUser } = await import("@/lib/auth/session");
 const { createMfaPending, readMfaPending } = await import("@/lib/auth/mfa-pending");
 
 let actors: Record<"admin" | "operator" | "viewer", Actor>;
@@ -35,6 +35,31 @@ async function loginAs(userId: string) {
   await createSession({ userId, email: user.email, name: user.name, role: user.role, sessionVersion: user.sessionVersion });
 }
 
+/** Login noutro browser (cookie jar vazio): devolve o token e deixa o jar como estava. */
+async function loginOnOtherDevice(userId: string): Promise<string> {
+  const saved = new Map(jar);
+  jar.clear();
+  await loginAs(userId);
+  const token = jar.get("sms_session")!;
+  jar.clear();
+  for (const [name, value] of saved) jar.set(name, value);
+  return token;
+}
+
+/** Faz falhar os INSERT numa tabela (trigger temporário) enquanto `run` corre. */
+async function withFailingInserts(table: "RevokedSession" | "AuditLog", run: () => Promise<void>) {
+  await prisma.$executeRawUnsafe(
+    `CREATE OR REPLACE FUNCTION test_fail_insert() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'falha simulada'; END $$ LANGUAGE plpgsql`,
+  );
+  await prisma.$executeRawUnsafe(`CREATE TRIGGER test_fail_insert BEFORE INSERT ON "${table}" FOR EACH ROW EXECUTE FUNCTION test_fail_insert()`);
+  try {
+    await run();
+  } finally {
+    await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS test_fail_insert ON "${table}"`);
+    await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS test_fail_insert()`);
+  }
+}
+
 describe("logout (destroySession)", () => {
   it("revoga a sessão deste dispositivo no servidor (uma cópia do token deixa de servir), audita e limpa o 2FA pendente", async () => {
     await loginAs(actors.operator.id);
@@ -42,11 +67,11 @@ describe("logout (destroySession)", () => {
     await createMfaPending({ userId: actors.admin.id, sessionVersion: 0 });
     expect(await getCurrentUser()).toMatchObject({ id: actors.operator.id });
 
-    await destroySession();
+    expect(await destroySession()).toEqual({ revocationFailed: false });
     expect(jar.get("sms_session")).toBe("");
     expect(await readMfaPending()).toBeNull();
-    expect(await prisma.auditLog.findFirst({ where: { action: "LOGOUT", userId: actors.operator.id } })).toMatchObject({
-      metadataJson: { scope: "device" },
+    expect((await prisma.auditLog.findFirstOrThrow({ where: { action: "LOGOUT", userId: actors.operator.id } })).metadataJson).toEqual({
+      scope: "device",
     });
 
     jar.set("sms_session", copied);
@@ -70,8 +95,7 @@ describe("logout (destroySession)", () => {
   });
 
   it("termina só a sessão deste dispositivo: outra sessão do mesmo utilizador continua válida", async () => {
-    await loginAs(actors.operator.id);
-    const otherDevice = jar.get("sms_session")!;
+    const otherDevice = await loginOnOtherDevice(actors.operator.id);
     await loginAs(actors.operator.id);
     const thisDevice = jar.get("sms_session")!;
     expect(thisDevice).not.toBe(otherDevice); // jti diferente por sessão
@@ -84,11 +108,121 @@ describe("logout (destroySession)", () => {
     expect(await getCurrentUser()).toMatchObject({ id: actors.operator.id });
   });
 
+  it("um novo login no mesmo browser revoga o token que este tinha (o logout seguinte não deixa o anterior válido)", async () => {
+    await loginAs(actors.operator.id);
+    const replaced = jar.get("sms_session")!;
+    await loginAs(actors.operator.id); // ex.: formulário de login submetido num separador antigo
+    const current = jar.get("sms_session")!;
+    expect(current).not.toBe(replaced);
+
+    jar.set("sms_session", replaced);
+    expect(await getCurrentUser()).toBeNull();
+    jar.set("sms_session", current);
+    expect(await getCurrentUser()).toMatchObject({ id: actors.operator.id });
+    await destroySession();
+    for (const token of [replaced, current]) {
+      jar.set("sms_session", token);
+      expect(await getCurrentUser()).toBeNull();
+    }
+    // Substituir não é um logout: só o «Sair» fica auditado.
+    expect(await prisma.auditLog.count({ where: { action: "LOGOUT", userId: actors.operator.id } })).toBe(1);
+  });
+
+  it("um token já inválido (conta desativada) é revogado e o LOGOUT fica assinalado como sessionValid:false", async () => {
+    await loginAs(actors.operator.id);
+    await prisma.user.update({ where: { id: actors.operator.id }, data: { isActive: false, sessionVersion: { increment: 1 } } });
+    expect(await getCurrentUser()).toBeNull();
+
+    expect(await destroySession()).toEqual({ revocationFailed: false });
+    expect((await prisma.auditLog.findFirstOrThrow({ where: { action: "LOGOUT", userId: actors.operator.id } })).metadataJson).toEqual({
+      scope: "device",
+      sessionValid: false,
+    });
+    expect(await prisma.revokedSession.count({ where: { userId: actors.operator.id } })).toBe(1);
+  });
+
+  it("o logout com o token de um utilizador apagado na base de dados não falha (auditoria sem FK)", async () => {
+    const ghost = await prisma.user.create({
+      data: { name: "Ghost", email: "ghost@test.local", role: "VIEWER", passwordHash: "x", mustChangePassword: false },
+    });
+    await loginAs(ghost.id);
+    await prisma.user.delete({ where: { id: ghost.id } });
+
+    expect(await destroySession()).toEqual({ revocationFailed: false });
+    expect(jar.get("sms_session")).toBe("");
+    expect(await prisma.auditLog.findFirstOrThrow({ where: { action: "LOGOUT", entityId: ghost.id } })).toMatchObject({
+      userId: null,
+      metadataJson: { scope: "device", sessionValid: false },
+    });
+  });
+
+  it("se a revogação falhar, apaga na mesma os cookies deste browser e avisa (revocationFailed)", async () => {
+    await loginAs(actors.operator.id);
+    const token = jar.get("sms_session")!;
+    await withFailingInserts("RevokedSession", async () => {
+      expect(await destroySession()).toEqual({ revocationFailed: true });
+    });
+    expect(jar.get("sms_session")).toBe("");
+    expect(await prisma.auditLog.count({ where: { action: "LOGOUT" } })).toBe(0);
+
+    // O token não ficou revogado: um novo «Sair» com ele (ex.: o mesmo browser) revoga e audita.
+    jar.set("sms_session", token);
+    expect(await getCurrentUser()).toMatchObject({ id: actors.operator.id });
+    expect(await destroySession()).toEqual({ revocationFailed: false });
+    expect(await getCurrentUser()).toBeNull();
+  });
+
+  it("revogação e auditoria são atómicas: se a auditoria falhar, a repetição revoga e audita", async () => {
+    await loginAs(actors.operator.id);
+    const token = jar.get("sms_session")!;
+    await withFailingInserts("AuditLog", async () => {
+      expect(await destroySession()).toEqual({ revocationFailed: true });
+    });
+    expect(await prisma.revokedSession.count()).toBe(0);
+
+    jar.set("sms_session", token);
+    expect(await destroySession()).toEqual({ revocationFailed: false });
+    expect(await prisma.revokedSession.count()).toBe(1);
+    expect(await prisma.auditLog.count({ where: { action: "LOGOUT", userId: actors.operator.id } })).toBe(1);
+  });
+
+  it("«Sair de todos os dispositivos» termina todas as sessões do utilizador (incluindo cópias) e audita", async () => {
+    const otherDevice = await loginOnOtherDevice(actors.operator.id);
+    const viewerDevice = await loginOnOtherDevice(actors.viewer.id);
+    await loginAs(actors.operator.id);
+    const thisDevice = jar.get("sms_session")!;
+
+    await destroyAllSessions();
+    expect(jar.get("sms_session")).toBe("");
+    for (const token of [thisDevice, otherDevice]) {
+      jar.set("sms_session", token);
+      expect(await getCurrentUser()).toBeNull();
+    }
+    jar.set("sms_session", viewerDevice); // outros utilizadores não são afetados
+    expect(await getCurrentUser()).toMatchObject({ id: actors.viewer.id });
+    expect((await prisma.auditLog.findFirstOrThrow({ where: { action: "LOGOUT", userId: actors.operator.id } })).metadataJson).toEqual({
+      scope: "all",
+    });
+  });
+
+  it("um token revogado ou antigo não serve para terminar as sessões atuais com «Sair de todos os dispositivos»", async () => {
+    await loginAs(actors.operator.id);
+    const revoked = jar.get("sms_session")!;
+    await destroySession();
+    const current = await loginOnOtherDevice(actors.operator.id);
+
+    jar.set("sms_session", revoked);
+    await destroyAllSessions();
+    expect(jar.get("sms_session")).toBe("");
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: actors.operator.id } })).sessionVersion).toBe(0);
+    expect(await prisma.auditLog.count({ where: { action: "LOGOUT", metadataJson: { equals: { scope: "all" } } } })).toBe(0);
+    jar.set("sms_session", current);
+    expect(await getCurrentUser()).toMatchObject({ id: actors.operator.id });
+  });
+
   it("as ações de administração continuam a terminar todas as sessões (sessionVersion)", async () => {
-    await loginAs(actors.operator.id);
-    const a = jar.get("sms_session")!;
-    await loginAs(actors.operator.id);
-    const b = jar.get("sms_session")!;
+    const a = await loginOnOtherDevice(actors.operator.id);
+    const b = await loginOnOtherDevice(actors.operator.id);
     await prisma.user.update({ where: { id: actors.operator.id }, data: { sessionVersion: { increment: 1 } } });
     for (const token of [a, b]) {
       jar.set("sms_session", token);

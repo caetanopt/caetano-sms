@@ -61,18 +61,23 @@ describe("runRetention", () => {
     expect(again.smsToAnonymize).toBe(0);
   });
 
-  it("removes logout revocations whose token has expired and keeps the active ones", async () => {
+  it("removes logout revocations whose token expired more than 1 h ago and keeps the rest", async () => {
     const now = new Date();
     await prisma.revokedSession.createMany({
       data: [
-        { jti: "expirado", userId: "u1", expiresAt: new Date(now.getTime() - 60_000) },
+        { jti: "expirado", userId: "u1", expiresAt: new Date(now.getTime() - 61 * 60_000) },
+        // Expirado há pouco: mantido (margem para relógios diferentes entre máquinas).
+        { jti: "margem", userId: "u1", expiresAt: new Date(now.getTime() - 59 * 60_000) },
         { jti: "ativo", userId: "u1", expiresAt: new Date(now.getTime() + 60 * 60_000) },
       ],
     });
     expect(await runRetention(getRetentionPolicy({}), { apply: false, now })).toMatchObject({ revokedSessionsToDelete: 1 });
-    expect(await prisma.revokedSession.count()).toBe(2);
+    expect(await prisma.revokedSession.count()).toBe(3);
     await runRetention(getRetentionPolicy({}), { apply: true, now });
-    expect((await prisma.revokedSession.findMany({ select: { jti: true } })).map((r) => r.jti)).toEqual(["ativo"]);
+    expect((await prisma.revokedSession.findMany({ select: { jti: true }, orderBy: { jti: "asc" } })).map((r) => r.jti)).toEqual([
+      "ativo",
+      "margem",
+    ]);
   });
 
   it("rejects unsafe retention settings", () => {

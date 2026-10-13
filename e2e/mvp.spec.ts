@@ -1,8 +1,9 @@
 import { expect, test, type Cookie, type Page } from "@playwright/test";
+import pg from "pg";
 import { base32Decode, totp } from "../src/features/auth/totp";
 import { decodeQrPath } from "../tests/helpers/qr-decode";
 import { E2E_METRICS_TOKEN } from "../playwright.config";
-import { E2E_ADMIN, E2E_ADMIN_TOTP_SECRET, E2E_OPERATOR, E2E_VIEWER } from "./global-setup";
+import { E2E_ADMIN, E2E_ADMIN_TOTP_SECRET, E2E_OPERATOR, E2E_SESSIONS, E2E_VIEWER } from "./global-setup";
 
 // Fluxos do CLAUDE.md §33: login, contacto, template, envio dry-run, histórico,
 // campanha, confirmação e bloqueio de opt-out. Tudo com o provider fake.
@@ -338,6 +339,53 @@ test("logout termina só a sessão deste dispositivo", async ({ page, browser })
   await expect(other).toHaveURL(/\/contacts$/);
   await expect(other.getByRole("heading", { name: "Contactos" })).toBeVisible();
   await otherContext.close();
+});
+
+test("«Sair de todos os dispositivos» termina também as sessões dos outros browsers", async ({ page, browser }) => {
+  const otherContext = await browser.newContext();
+  const other = await otherContext.newPage();
+  await formLogin(other, E2E_SESSIONS);
+  await other.waitForURL("**/dashboard");
+  await formLogin(page, E2E_SESSIONS);
+  await page.waitForURL("**/dashboard");
+
+  await page.goto("/account/password");
+  await page.getByRole("button", { name: "Sair de todos os dispositivos" }).click();
+  await page.waitForURL(/\/login/);
+  await expect(page.getByRole("status").filter({ hasText: "Sessão terminada em todos os dispositivos." })).toBeVisible();
+  // O outro browser perdeu a sessão.
+  await other.goto("/contacts");
+  await other.waitForURL(/\/login/);
+  await expect(other.getByRole("alert").filter({ hasText: "Sessão terminada" })).toBeVisible();
+  await otherContext.close();
+});
+
+/** Faz falhar os INSERT em RevokedSession (trigger temporário na base de dados de teste) durante `run`. */
+async function withFailingRevocation(run: () => Promise<void>) {
+  const client = new pg.Client({ connectionString: process.env.TEST_DATABASE_URL });
+  await client.connect();
+  try {
+    await client.query("CREATE OR REPLACE FUNCTION e2e_fail_insert() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'falha simulada'; END $$ LANGUAGE plpgsql");
+    await client.query('CREATE TRIGGER e2e_fail_insert BEFORE INSERT ON "RevokedSession" FOR EACH ROW EXECUTE FUNCTION e2e_fail_insert()');
+    await run();
+  } finally {
+    await client.query('DROP TRIGGER IF EXISTS e2e_fail_insert ON "RevokedSession"');
+    await client.query("DROP FUNCTION IF EXISTS e2e_fail_insert()");
+    await client.end();
+  }
+}
+
+test("se o servidor não conseguir revogar a sessão, o «Sair» apaga-a na mesma deste browser e avisa", async ({ page, context }) => {
+  await formLogin(page, E2E_SESSIONS);
+  await page.waitForURL("**/dashboard");
+  await withFailingRevocation(async () => {
+    await page.getByRole("button", { name: "Sair" }).click();
+    await page.waitForURL(/\/login/);
+    await expect(page.getByRole("alert").filter({ hasText: "o servidor não confirmou o fim da sessão" })).toBeVisible();
+  });
+  expect((await context.cookies()).find((cookie) => cookie.name === "__Host-sms_session")).toBeUndefined();
+  await page.goto("/dashboard");
+  await expect(page).toHaveURL(/\/login$/);
 });
 
 test("cookie de mensagens: __Host-, Secure e HttpOnly; renovado no login e removido no logout", async ({ page, context }) => {
