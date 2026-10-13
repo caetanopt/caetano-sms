@@ -354,9 +354,12 @@ com telefone mascarado e sem o texto da mensagem.
   Um teste estático falha se outro módulo importar/usar `cookies()` de `next/headers`, se houver
   escritas por `NextResponse.cookies` ou `Set-Cookie` em bruto, opções de cookie fora do helper, ou
   escritas sem os atributos do prefixo (é uma verificação por linhas, não uma garantia formal).
-- **Logout**: além de apagar os cookies, **revoga a sessão no servidor** (incrementa
-  `sessionVersion`, auditado `LOGOUT`): uma cópia do token obtida antes do logout deixa de servir.
-  Termina as sessões do utilizador em todos os dispositivos. O passo intermédio do 2FA também é
+- **Logout**: termina **só a sessão deste dispositivo** — além de apagar os cookies, revoga o token
+  no servidor pelo seu identificador (`jti`, tabela `RevokedSession`; auditado `LOGOUT`): uma cópia
+  do token obtida antes do logout deixa de servir, e as sessões do mesmo utilizador noutros
+  dispositivos mantêm-se. Terminar **todas** as sessões continua a ser feito pelas ações de
+  administração (desativar, mudar perfil, repor palavra-passe ou 2FA → `sessionVersion`). As
+  revogações expiradas são removidas por `pnpm retention --apply`. O passo intermédio do 2FA é
   limpo no logout e em qualquer novo login.
 - **Login**: bloqueio após 5 falhas por email ou 20 por IP em 15 min; tempo constante para contas
   inexistentes; mensagens que não revelam se a conta existe; auditoria `LOGIN_*` com IP. Email e IP
@@ -563,6 +566,9 @@ pnpm retention --apply            # cron diário, depois de validados os prazos
   antiga não apaga nem revoga o cookie novo, pelo que um logout feito nela durante a janela não teria
   efeito. Se houve sobreposição, no fim invalidar todas as sessões com
   `UPDATE "User" SET "sessionVersion" = "sessionVersion" + 1;` (todos voltam a iniciar sessão).
+  A mesma versão introduz o logout por dispositivo (migração `RevokedSession`, aplicada por
+  `pnpm prisma migrate deploy`): tokens emitidos antes, sem `jti`, são recusados — coincide com o
+  novo login já exigido pelo prefixo.
 - Health checks: `GET /api/health` (liveness, sem dependências) e `GET /api/health/ready`
   (verifica a base de dados; 503 se indisponível). Nenhum envia SMS.
 - Backups diários do PostgreSQL com retenção alinhada com a política acima; testar restauros.

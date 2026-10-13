@@ -17,7 +17,7 @@ export default async function globalSetup() {
   process.env.DATABASE_URL = url;
   const { prisma } = await import("../src/lib/db/prisma");
   await prisma.$executeRawUnsafe(
-    'TRUNCATE "CampaignRecipient", "Campaign", "ContactListMember", "ContactList", "ConsentEvent", "SuppressionEntry", "SmsDeliveryEvent", "SmsMessage", "SmsTemplate", "AuditLog", "LoginAttempt", "SendRateBucket", "MfaRecoveryCode", "Contact", "User" CASCADE',
+    'TRUNCATE "CampaignRecipient", "Campaign", "ContactListMember", "ContactList", "ConsentEvent", "SuppressionEntry", "SmsDeliveryEvent", "SmsMessage", "SmsTemplate", "AuditLog", "LoginAttempt", "SendRateBucket", "MfaRecoveryCode", "RevokedSession", "Contact", "User" CASCADE',
   );
   const { encryptSecret } = await import("../src/lib/auth/mfa-crypto");
   const { base32Decode } = await import("../src/features/auth/totp");

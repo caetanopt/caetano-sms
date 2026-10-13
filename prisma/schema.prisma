@@ -374,6 +374,20 @@ model SendRateBucket {
 }
 
 /// Códigos de recuperação do 2FA: só o hash (HMAC) é guardado; cada código serve uma vez.
+/// Sessões terminadas por logout (só nesse dispositivo): o token (JWT) de 8 h é recusado pelo `jti`
+/// até expirar. Sem chave estrangeira: o logout nunca falha por causa desta tabela. As linhas
+/// expiradas são removidas por `pnpm retention --apply`. Ações de administração (desativar, mudar
+/// perfil, repor palavra-passe/2FA) terminam TODAS as sessões através de `User.sessionVersion`.
+model RevokedSession {
+  jti       String   @id
+  userId    String
+  expiresAt DateTime
+  revokedAt DateTime @default(now())
+
+  @@index([expiresAt])
+  @@index([userId])
+}
+
 model MfaRecoveryCode {
   id        String    @id @default(cuid())
   userId    String

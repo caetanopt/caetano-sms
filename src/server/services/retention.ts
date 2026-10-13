@@ -8,6 +8,8 @@ export type RetentionReport = {
   deliveryEventsToDelete: number;
   loginAttemptsToDelete: number;
   auditIpsToClear: number;
+  /** Revogações de sessão (logout) cujo token já expirou: deixaram de ser necessárias. */
+  revokedSessionsToDelete: number;
 };
 
 const BATCH = 500;
@@ -27,6 +29,7 @@ export async function runRetention(policy: RetentionPolicy, options: { apply: bo
   const eventsWhere = { createdAt: { lt: cutoff(now, policy.deliveryEventDays) } };
   const loginWhere = { createdAt: { lt: cutoff(now, policy.loginAttemptDays) } };
   const auditWhere = { ipAddress: { not: null }, createdAt: { lt: cutoff(now, policy.auditIpDays) } };
+  const revokedWhere = { expiresAt: { lt: now } };
 
   const report: RetentionReport = {
     apply: options.apply,
@@ -34,6 +37,7 @@ export async function runRetention(policy: RetentionPolicy, options: { apply: bo
     deliveryEventsToDelete: await prisma.smsDeliveryEvent.count({ where: eventsWhere }),
     loginAttemptsToDelete: await prisma.loginAttempt.count({ where: loginWhere }),
     auditIpsToClear: await prisma.auditLog.count({ where: auditWhere }),
+    revokedSessionsToDelete: await prisma.revokedSession.count({ where: revokedWhere }),
   };
   if (!options.apply) return report;
 
@@ -61,6 +65,7 @@ export async function runRetention(policy: RetentionPolicy, options: { apply: bo
   }
   await prisma.smsDeliveryEvent.deleteMany({ where: eventsWhere });
   await prisma.loginAttempt.deleteMany({ where: loginWhere });
+  await prisma.revokedSession.deleteMany({ where: revokedWhere });
   await prisma.auditLog.updateMany({ where: auditWhere, data: { ipAddress: null } });
   // Destinatários de campanhas terminadas há muito: remover hashes de telefone.
   await prisma.campaignRecipient.updateMany({
@@ -76,6 +81,7 @@ export async function runRetention(policy: RetentionPolicy, options: { apply: bo
         deliveryEventsDeleted: report.deliveryEventsToDelete,
         loginAttemptsDeleted: report.loginAttemptsToDelete,
         auditIpsCleared: report.auditIpsToClear,
+        revokedSessionsDeleted: report.revokedSessionsToDelete,
         ...policy,
       },
     },

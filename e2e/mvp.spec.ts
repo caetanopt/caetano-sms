@@ -323,6 +323,23 @@ test("cookies de sessão e de 2FA pendente: __Host-, Secure, HttpOnly; logout re
   sessions.set(E2E_ADMIN.email, await context.cookies());
 });
 
+test("logout termina só a sessão deste dispositivo", async ({ page, browser }) => {
+  const otherContext = await browser.newContext();
+  const other = await otherContext.newPage();
+  await formLogin(other, E2E_VIEWER);
+  await other.waitForURL("**/dashboard");
+  await formLogin(page, E2E_VIEWER);
+  await page.waitForURL("**/dashboard");
+
+  await page.getByRole("button", { name: "Sair" }).click();
+  await page.waitForURL("**/login");
+  // O outro dispositivo (outro browser) continua com sessão iniciada.
+  await other.goto("/contacts");
+  await expect(other).toHaveURL(/\/contacts$/);
+  await expect(other.getByRole("heading", { name: "Contactos" })).toBeVisible();
+  await otherContext.close();
+});
+
 test("cookie de mensagens: __Host-, Secure e HttpOnly; renovado no login e removido no logout", async ({ page, context }) => {
   const flashCookie = async () => (await context.cookies()).find((cookie) => cookie.name.endsWith("sms_flash_bid"));
   await page.goto("/login");

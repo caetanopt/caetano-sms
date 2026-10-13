@@ -61,6 +61,20 @@ describe("runRetention", () => {
     expect(again.smsToAnonymize).toBe(0);
   });
 
+  it("removes logout revocations whose token has expired and keeps the active ones", async () => {
+    const now = new Date();
+    await prisma.revokedSession.createMany({
+      data: [
+        { jti: "expirado", userId: "u1", expiresAt: new Date(now.getTime() - 60_000) },
+        { jti: "ativo", userId: "u1", expiresAt: new Date(now.getTime() + 60 * 60_000) },
+      ],
+    });
+    expect(await runRetention(getRetentionPolicy({}), { apply: false, now })).toMatchObject({ revokedSessionsToDelete: 1 });
+    expect(await prisma.revokedSession.count()).toBe(2);
+    await runRetention(getRetentionPolicy({}), { apply: true, now });
+    expect((await prisma.revokedSession.findMany({ select: { jti: true } })).map((r) => r.jti)).toEqual(["ativo"]);
+  });
+
   it("rejects unsafe retention settings", () => {
     expect(() => getRetentionPolicy({ SMS_RETENTION_DAYS: "5" })).toThrow();
     expect(getRetentionPolicy({ SMS_RETENTION_DAYS: "180" }).smsDays).toBe(180);

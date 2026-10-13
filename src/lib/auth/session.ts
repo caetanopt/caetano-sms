@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
@@ -22,6 +23,9 @@ export type SessionClaims = {
   mfa?: boolean;
 };
 
+/** Sessão lida do cookie: identificador do token (para o logout deste dispositivo) e expiração. */
+export type ActiveSession = SessionClaims & { jti: string; expiresAt: Date };
+
 function secret() {
   const value = process.env.AUTH_SECRET;
   if (!value || value.length < 32) {
@@ -40,6 +44,7 @@ export async function createSession(claims: SessionClaims) {
   })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(claims.userId)
+    .setJti(randomUUID())
     .setIssuedAt()
     .setExpirationTime(`${SESSION_HOURS}h`)
     .sign(secret());
@@ -54,22 +59,21 @@ export async function createSession(claims: SessionClaims) {
 }
 
 /**
- * Logout: revoga a sessão no servidor e apaga os cookies. O token é stateless (JWT de 8 h): sem
- * revogação, uma cópia obtida antes do logout (computador partilhado, cópia do perfil do browser)
- * continuaria válida. Incrementar `sessionVersion` invalida todas as sessões do utilizador (logout
- * em todos os dispositivos); a condição sobre a versão impede que um token já revogado sirva para
- * terminar as sessões atuais de alguém.
+ * Logout deste dispositivo: revoga o token atual no servidor (pelo `jti`) e apaga os cookies. O
+ * token é stateless (JWT de 8 h): sem revogação, uma cópia obtida antes do logout (computador
+ * partilhado, cópia do perfil do browser) continuaria válida. As outras sessões do utilizador
+ * mantêm-se; terminar todas é feito pelas ações de administração (`sessionVersion`).
  */
 export async function destroySession() {
   const session = await readSession();
   if (session) {
-    const { count } = await prisma.user.updateMany({
-      where: { id: session.userId, sessionVersion: session.sessionVersion },
-      data: { sessionVersion: { increment: 1 } },
+    const { count } = await prisma.revokedSession.createMany({
+      data: [{ jti: session.jti, userId: session.userId, expiresAt: session.expiresAt }],
+      skipDuplicates: true,
     });
     if (count === 1) {
       await prisma.auditLog.create({
-        data: { userId: session.userId, action: "LOGOUT", entityType: "User", entityId: session.userId, metadataJson: {} },
+        data: { userId: session.userId, action: "LOGOUT", entityType: "User", entityId: session.userId, metadataJson: { scope: "device" } },
       });
     }
   }
@@ -79,7 +83,7 @@ export async function destroySession() {
   await clearFlashCookie();
 }
 
-export async function readSession(): Promise<SessionClaims | null> {
+export async function readSession(): Promise<ActiveSession | null> {
   const jar = await cookies();
   const token = jar.get(hostCookieName(SESSION_COOKIE))?.value;
   if (!token) return null;
@@ -87,7 +91,11 @@ export async function readSession(): Promise<SessionClaims | null> {
   try {
     const { payload } = await jwtVerify(token, secret());
     if (!payload.sub || !payload.email || !payload.name || !payload.role) return null;
+    // Tokens sem jti (anteriores ao logout por dispositivo) não podem ser revogados: recusados.
+    if (typeof payload.jti !== "string" || !payload.jti || typeof payload.exp !== "number") return null;
     return {
+      jti: payload.jti,
+      expiresAt: new Date(payload.exp * 1000),
       userId: payload.sub,
       email: String(payload.email),
       name: String(payload.name),
@@ -117,11 +125,9 @@ export type CurrentUser = {
  * (repor/alterar palavra-passe, desativar ou mudar o perfil invalida sessões antigas).
  * Nunca confia na role do token.
  */
-export async function getCurrentUser(): Promise<CurrentUser | null> {
-  const session = await readSession();
-  if (!session) return null;
-  const user = await prisma.user.findUnique({
-    where: { id: session.userId },
+function findSessionUser(userId: string) {
+  return prisma.user.findUnique({
+    where: { id: userId },
     select: {
       id: true,
       name: true,
@@ -133,6 +139,17 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
       totpEnabledAt: true,
     },
   });
+}
+
+export async function getCurrentUser(): Promise<CurrentUser | null> {
+  const session = await readSession();
+  if (!session) return null;
+  const [user, revoked] = await Promise.all([
+    findSessionUser(session.userId),
+    prisma.revokedSession.findUnique({ where: { jti: session.jti }, select: { jti: true } }),
+  ]);
+  // Sessão terminada com logout neste dispositivo (uma cópia do token deixa de servir).
+  if (revoked) return null;
   if (!user?.isActive || user.sessionVersion !== session.sessionVersion) return null;
   const mfaEnabled = user.totpEnabledAt !== null;
   // Com 2FA ativo, uma sessão sem segundo fator nunca é válida.

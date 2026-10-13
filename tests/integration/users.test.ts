@@ -36,7 +36,7 @@ async function loginAs(userId: string) {
 }
 
 describe("logout (destroySession)", () => {
-  it("revoga a sessão no servidor (um token copiado antes do logout deixa de servir), audita e limpa o 2FA pendente", async () => {
+  it("revoga a sessão deste dispositivo no servidor (uma cópia do token deixa de servir), audita e limpa o 2FA pendente", async () => {
     await loginAs(actors.operator.id);
     const copied = jar.get("sms_session")!;
     await createMfaPending({ userId: actors.admin.id, sessionVersion: 0 });
@@ -45,7 +45,9 @@ describe("logout (destroySession)", () => {
     await destroySession();
     expect(jar.get("sms_session")).toBe("");
     expect(await readMfaPending()).toBeNull();
-    expect(await prisma.auditLog.count({ where: { action: "LOGOUT", userId: actors.operator.id } })).toBe(1);
+    expect(await prisma.auditLog.findFirst({ where: { action: "LOGOUT", userId: actors.operator.id } })).toMatchObject({
+      metadataJson: { scope: "device" },
+    });
 
     jar.set("sms_session", copied);
     expect(await getCurrentUser()).toBeNull();
@@ -65,6 +67,45 @@ describe("logout (destroySession)", () => {
     expect(await prisma.auditLog.count({ where: { action: "LOGOUT", userId: actors.operator.id } })).toBe(1);
     jar.set("sms_session", current);
     expect(await getCurrentUser()).toMatchObject({ id: actors.operator.id });
+  });
+
+  it("termina só a sessão deste dispositivo: outra sessão do mesmo utilizador continua válida", async () => {
+    await loginAs(actors.operator.id);
+    const otherDevice = jar.get("sms_session")!;
+    await loginAs(actors.operator.id);
+    const thisDevice = jar.get("sms_session")!;
+    expect(thisDevice).not.toBe(otherDevice); // jti diferente por sessão
+
+    await destroySession();
+    expect(await prisma.revokedSession.count({ where: { userId: actors.operator.id } })).toBe(1);
+    jar.set("sms_session", thisDevice);
+    expect(await getCurrentUser()).toBeNull();
+    jar.set("sms_session", otherDevice);
+    expect(await getCurrentUser()).toMatchObject({ id: actors.operator.id });
+  });
+
+  it("as ações de administração continuam a terminar todas as sessões (sessionVersion)", async () => {
+    await loginAs(actors.operator.id);
+    const a = jar.get("sms_session")!;
+    await loginAs(actors.operator.id);
+    const b = jar.get("sms_session")!;
+    await prisma.user.update({ where: { id: actors.operator.id }, data: { sessionVersion: { increment: 1 } } });
+    for (const token of [a, b]) {
+      jar.set("sms_session", token);
+      expect(await getCurrentUser()).toBeNull();
+    }
+  });
+
+  it("um token sem jti (anterior ao logout por dispositivo) é recusado", async () => {
+    const { SignJWT } = await import("jose");
+    const legacy = await new SignJWT({ email: "operator@test.local", name: "OPERATOR", role: "OPERATOR", sv: 0, mfa: false })
+      .setProtectedHeader({ alg: "HS256" })
+      .setSubject(actors.operator.id)
+      .setIssuedAt()
+      .setExpirationTime("8h")
+      .sign(new TextEncoder().encode(process.env.AUTH_SECRET!));
+    jar.set("sms_session", legacy);
+    expect(await getCurrentUser()).toBeNull();
   });
 
   it("um novo login limpa um passo de 2FA deixado a meio (ex.: outra pessoa no mesmo computador)", async () => {
