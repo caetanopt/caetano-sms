@@ -2,6 +2,7 @@ import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { mfaRequiredFor } from "@/features/auth/mfa-policy";
+import { clearMfaPending } from "@/lib/auth/mfa-pending";
 import { prisma } from "@/lib/db/prisma";
 import { clearFlashCookie, flashUrl, rotateFlashCookie } from "@/lib/http/flash";
 import { deleteHostCookie, deleteLegacyCookie, hostCookieName, hostCookieOptions } from "@/lib/http/host-cookies";
@@ -46,13 +47,35 @@ export async function createSession(claims: SessionClaims) {
   const jar = await cookies();
   jar.set(hostCookieName(SESSION_COOKIE), token, hostCookieOptions({ sameSite: "lax", maxAge: SESSION_HOURS * 60 * 60 }));
   await deleteLegacyCookie(SESSION_COOKIE);
+  // Um passo de 2FA a meio (ex.: outra pessoa no mesmo computador) não sobrevive a um novo login.
+  await clearMfaPending();
   // Cookie de mensagens novo a cada login (ver rotateFlashCookie).
   await rotateFlashCookie();
 }
 
+/**
+ * Logout: revoga a sessão no servidor e apaga os cookies. O token é stateless (JWT de 8 h): sem
+ * revogação, uma cópia obtida antes do logout (computador partilhado, cópia do perfil do browser)
+ * continuaria válida. Incrementar `sessionVersion` invalida todas as sessões do utilizador (logout
+ * em todos os dispositivos); a condição sobre a versão impede que um token já revogado sirva para
+ * terminar as sessões atuais de alguém.
+ */
 export async function destroySession() {
+  const session = await readSession();
+  if (session) {
+    const { count } = await prisma.user.updateMany({
+      where: { id: session.userId, sessionVersion: session.sessionVersion },
+      data: { sessionVersion: { increment: 1 } },
+    });
+    if (count === 1) {
+      await prisma.auditLog.create({
+        data: { userId: session.userId, action: "LOGOUT", entityType: "User", entityId: session.userId, metadataJson: {} },
+      });
+    }
+  }
   await deleteHostCookie(SESSION_COOKIE, "lax");
   await deleteLegacyCookie(SESSION_COOKIE);
+  await clearMfaPending();
   await clearFlashCookie();
 }
 

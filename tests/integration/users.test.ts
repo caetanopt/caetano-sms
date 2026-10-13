@@ -16,7 +16,8 @@ vi.mock("next/headers", () => ({
   }),
 }));
 process.env.AUTH_SECRET ??= "integration-test-secret-with-at-least-32-chars";
-const { createSession, getCurrentUser } = await import("@/lib/auth/session");
+const { createSession, destroySession, getCurrentUser } = await import("@/lib/auth/session");
+const { createMfaPending, readMfaPending } = await import("@/lib/auth/mfa-pending");
 
 let actors: Record<"admin" | "operator" | "viewer", Actor>;
 
@@ -33,6 +34,46 @@ async function loginAs(userId: string) {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
   await createSession({ userId, email: user.email, name: user.name, role: user.role, sessionVersion: user.sessionVersion });
 }
+
+describe("logout (destroySession)", () => {
+  it("revoga a sessão no servidor (um token copiado antes do logout deixa de servir), audita e limpa o 2FA pendente", async () => {
+    await loginAs(actors.operator.id);
+    const copied = jar.get("sms_session")!;
+    await createMfaPending({ userId: actors.admin.id, sessionVersion: 0 });
+    expect(await getCurrentUser()).toMatchObject({ id: actors.operator.id });
+
+    await destroySession();
+    expect(jar.get("sms_session")).toBe("");
+    expect(await readMfaPending()).toBeNull();
+    expect(await prisma.auditLog.count({ where: { action: "LOGOUT", userId: actors.operator.id } })).toBe(1);
+
+    jar.set("sms_session", copied);
+    expect(await getCurrentUser()).toBeNull();
+    await loginAs(actors.operator.id);
+    expect(await getCurrentUser()).toMatchObject({ id: actors.operator.id });
+  });
+
+  it("um token já revogado não termina as sessões atuais do utilizador", async () => {
+    await loginAs(actors.operator.id);
+    const revoked = jar.get("sms_session")!;
+    await destroySession();
+    await loginAs(actors.operator.id);
+    const current = jar.get("sms_session")!;
+
+    jar.set("sms_session", revoked);
+    await destroySession();
+    expect(await prisma.auditLog.count({ where: { action: "LOGOUT", userId: actors.operator.id } })).toBe(1);
+    jar.set("sms_session", current);
+    expect(await getCurrentUser()).toMatchObject({ id: actors.operator.id });
+  });
+
+  it("um novo login limpa um passo de 2FA deixado a meio (ex.: outra pessoa no mesmo computador)", async () => {
+    await createMfaPending({ userId: actors.admin.id, sessionVersion: 0 });
+    expect(await readMfaPending()).toMatchObject({ userId: actors.admin.id });
+    await loginAs(actors.operator.id);
+    expect(await readMfaPending()).toBeNull();
+  });
+});
 
 describe("createUser", () => {
   it("creates a user with a temporary password that must be changed, and audits", async () => {

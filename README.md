@@ -351,7 +351,13 @@ com telefone mascarado e sem o texto da mensagem.
   versões com Domain, pelo que outro subdomínio da empresa (ex.: um site comprometido em
   `*.empresa.pt`) não consegue plantar cookies seus — por exemplo, deixar alguém com sessão
   iniciada na conta de quem ataca ("cookie tossing"). A remoção (logout) usa os mesmos atributos.
-  Um teste falha se algum código escrever cookies fora destes módulos ou sem estes atributos.
+  Um teste estático falha se outro módulo importar/usar `cookies()` de `next/headers`, se houver
+  escritas por `NextResponse.cookies` ou `Set-Cookie` em bruto, opções de cookie fora do helper, ou
+  escritas sem os atributos do prefixo (é uma verificação por linhas, não uma garantia formal).
+- **Logout**: além de apagar os cookies, **revoga a sessão no servidor** (incrementa
+  `sessionVersion`, auditado `LOGOUT`): uma cópia do token obtida antes do logout deixa de servir.
+  Termina as sessões do utilizador em todos os dispositivos. O passo intermédio do 2FA também é
+  limpo no logout e em qualquer novo login.
 - **Login**: bloqueio após 5 falhas por email ou 20 por IP em 15 min; tempo constante para contas
   inexistentes; mensagens que não revelam se a conta existe; auditoria `LOGIN_*` com IP. Email e IP
   guardados só como HMAC. O IP só é lido de `X-Forwarded-For` com `TRUST_PROXY=true` (atrás de proxy
@@ -549,9 +555,14 @@ pnpm retention --apply            # cron diário, depois de validados os prazos
   `SMS_PROVIDER`, `AWS_SMS_DRY_RUN` (explícito), `AWS_REGION`, `AWS_SMS_ORIGINATION_IDENTITY`,
   `AWS_SMS_CONFIGURATION_SET`, `AWS_SMS_PROTECT_CONFIGURATION_ID`; opcionais as de eventos e limites.
 - **Cookies `__Host-` (a partir desta versão)**: no primeiro deploy com o prefixo, as sessões
-  abertas deixam de ser reconhecidas — todos os utilizadores voltam a iniciar sessão uma vez (os
-  cookies antigos sem prefixo são ignorados e apagados no login/logout seguinte). A aplicação tem de
-  ser servida por HTTPS (o prefixo exige Secure).
+  abertas deixam de ser reconhecidas — todos os utilizadores voltam a iniciar sessão uma vez (o
+  cookie de sessão antigo sem prefixo, `sms_session`, é ignorado e apagado no login/logout
+  seguinte). A aplicação tem de ser servida por HTTPS (o prefixo exige Secure; atrás de um proxy TLS
+  funciona). **Fazer este deploy sem sobreposição de versões** (parar as instâncias antigas antes de
+  as novas receberem tráfego, ex.: ECS `minimumHealthyPercent=0` ou troca blue/green): uma instância
+  antiga não apaga nem revoga o cookie novo, pelo que um logout feito nela durante a janela não teria
+  efeito. Se houve sobreposição, no fim invalidar todas as sessões com
+  `UPDATE "User" SET "sessionVersion" = "sessionVersion" + 1;` (todos voltam a iniciar sessão).
 - Health checks: `GET /api/health` (liveness, sem dependências) e `GET /api/health/ready`
   (verifica a base de dados; 503 se indisponível). Nenhum envia SMS.
 - Backups diários do PostgreSQL com retenção alinhada com a política acima; testar restauros.

@@ -6,6 +6,10 @@ import { cookies } from "next/headers";
  * (ex.: um site comprometido em *.empresa.pt) não consegue plantar um valor seu no browser de um
  * utilizador ("cookie tossing" — ex.: iniciar-lhe sessão na conta de quem ataca, ou fixar o cookie
  * de mensagens). Em desenvolvimento (http) usa-se o nome simples, porque o prefixo exige Secure.
+ *
+ * Nota: o `next build` fixa NODE_ENV=production no código compilado, pelo que qualquer deploy com
+ * `next start` (incluindo staging) usa o prefixo e Secure; só o `next dev` usa os nomes simples.
+ * Por isso a aplicação tem de ser servida por HTTPS (atrás de um proxy TLS também funciona).
  */
 export function secureCookies(): boolean {
   return process.env.NODE_ENV === "production";

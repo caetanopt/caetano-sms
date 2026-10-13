@@ -59,27 +59,55 @@ describe("escrita de cookies no código", () => {
       return /\.tsx?$/.test(name) ? [path] : [];
     });
   const sources = files(join(ROOT, "src")).map((file) => ({ file: relative(ROOT, file), text: readFileSync(file, "utf8") }));
+  const HELPER = "src/lib/http/host-cookies.ts";
+  const ALLOWED = ["src/lib/auth/mfa-pending.ts", "src/lib/auth/session.ts", "src/lib/http/flash.ts", HELPER];
+  const codeLines = (text: string) =>
+    text
+      .split("\n")
+      .map((line, i) => ({ line, n: i + 1 }))
+      .filter(({ line }) => !/^\s*(\*|\/\/|\/\*)/.test(line))
+      // Comentário no fim da linha não conta (mas "https://" dentro de strings mantém-se).
+      .map(({ line, n }) => ({ line: line.replace(/(^|[^:])\/\/.*$/, "$1"), n }));
 
   // Novos cookies têm de passar por host-cookies.ts (prefixo __Host- em produção).
-  it("só os módulos de sessão, 2FA pendente e mensagens usam cookies()", () => {
-    expect(sources.filter(({ text }) => /\bcookies\(\)/.test(text)).map(({ file }) => file).sort()).toEqual([
-      "src/lib/auth/mfa-pending.ts",
-      "src/lib/auth/session.ts",
-      "src/lib/http/flash.ts",
-      "src/lib/http/host-cookies.ts",
-    ]);
+  it("só os módulos de sessão, 2FA pendente e mensagens importam ou usam cookies() de next/headers", () => {
+    const users = sources.filter(
+      ({ text }) => /\bcookies\(\)/.test(text) || /import\s*\{[^}]*\bcookies\b[^}]*\}\s*from\s*["']next\/headers["']/.test(text),
+    );
+    expect(users.map(({ file }) => file).sort()).toEqual([...ALLOWED].sort());
   });
 
-  it("cada escrita usa os atributos do prefixo e nenhuma remoção usa delete() simples", () => {
+  it("nenhum código escreve cookies por NextResponse/Response ou Set-Cookie em bruto", () => {
+    const offenders = sources.flatMap(({ file, text }) =>
+      codeLines(text)
+        .filter(({ line }) => /\.cookies\.(set|delete)\(|set-cookie|ResponseCookies/i.test(line))
+        .map(({ n }) => `${file}:${n}`),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it("opções de cookie (httpOnly/secure) só existem no helper", () => {
     const offenders = sources
-      .filter(({ file }) => file !== "src/lib/http/host-cookies.ts")
+      .filter(({ file }) => file !== HELPER)
       .flatMap(({ file, text }) =>
-        text
-          .split("\n")
-          .map((line, i) => ({ line, at: `${file}:${i + 1}` }))
-          .filter(({ line }) => /\b(jar|cookies\(\)\))\.(set|delete)\(/.test(line))
-          .filter(({ line }) => /\.delete\(/.test(line) || !/(hostCookieOptions|flashCookieOptions)\(/.test(line))
-          .map(({ at }) => at),
+        codeLines(text)
+          .filter(({ line }) => /\bhttpOnly\b|\bsecure\s*:/.test(line))
+          .map(({ n }) => `${file}:${n}`),
+      );
+    expect(offenders).toEqual([]);
+  });
+
+  it("nos módulos autorizados, cada escrita usa os atributos do prefixo nos argumentos e nunca delete()", () => {
+    const NON_COOKIE_RECEIVERS = new Set(["params", "searchParams"]); // URLSearchParams em flash.ts
+    const offenders = sources
+      .filter(({ file }) => ALLOWED.includes(file) && file !== HELPER)
+      .flatMap(({ file, text }) =>
+        codeLines(text).flatMap(({ line, n }) =>
+          [...line.matchAll(/([\w$]+|\))\.(set|delete)\((.*)$/g)]
+            .filter(([, receiver]) => !NON_COOKIE_RECEIVERS.has(receiver))
+            .filter(([, , method, args]) => method === "delete" || !/(hostCookieOptions|flashCookieOptions)\(/.test(args))
+            .map(() => `${file}:${n}`),
+        ),
       );
     expect(offenders).toEqual([]);
   });
