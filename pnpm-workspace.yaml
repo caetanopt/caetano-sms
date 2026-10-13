@@ -1,0 +1,33 @@
+allowBuilds:
+  '@prisma/engines': true
+  esbuild: true
+  prisma: true
+  unrs-resolver: true
+
+# Correções de segurança em dependências transitivas (pnpm audit).
+overrides:
+  # CLI do Prisma.
+  deepmerge-ts: ">=8.0.0"
+  mysql2: ">=3.23.1"
+  # GHSA-68fv-2mgg-jv7q (DoS em source maps indexados): via postcss (next, @tailwindcss/postcss,
+  # vite) e diretamente via @tailwindcss/node. Só a gama vulnerável é redirecionada.
+  "source-map-js@<1.2.2": "^1.2.2"
+  # GHSA-wq5f-xc86-pv6w / CVE-2026-96889 (librsvg no sharp): via next (otimização de imagens),
+  # que aceita ^0.35.4. Só a gama vulnerável é redirecionada.
+  "sharp@<0.35.5": "^0.35.5"
+
+# Advisories aceites conscientemente: o pnpm ignora o GHSA em todos os caminhos, por isso cada
+# entrada tem de estar justificada em scripts/check-audit-ignores.ts, que falha se o pacote
+# afetado entrar na árvore de produção (`pnpm audit:deps`). Rever quando houver versão corrigida.
+#
+# GHSA-vfj7-8cjw-p6xm (braces <=3.0.3, sem versão corrigida; DoS por padrões muito aninhados).
+# - Pacote resolvido pelo npm (o que o audit vê): só em eslint-config-next >
+#   @next/eslint-plugin-next > fast-glob > micromatch > braces (devDependency). O único padrão
+#   expandido é `settings.next.rootDir` da configuração ESLint (não definido).
+# - Cópias empacotadas (invisíveis ao audit) no CLI do Prisma, tsx, vite/rollup e playwright: o
+#   tsx corre os workers e o CLI do Prisma corre `migrate deploy` em produção, mas só com padrões
+#   e caminhos fixos.
+# Nenhum caminho recebe input de utilizadores: o DoS não é explorável.
+audit:
+  ignore:
+    - GHSA-vfj7-8cjw-p6xm

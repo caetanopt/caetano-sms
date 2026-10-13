@@ -10,8 +10,17 @@ function createClient() {
   return new PrismaClient({ adapter });
 }
 
-export const prisma = globalForPrisma.prisma ?? createClient();
-
-if (process.env.NODE_ENV !== "production") {
-  globalForPrisma.prisma = prisma;
+function getClient() {
+  globalForPrisma.prisma ??= createClient();
+  return globalForPrisma.prisma;
 }
+
+// Lazy: o cliente só é criado no primeiro acesso, para que importar este módulo
+// (por exemplo durante `next build`) não exija DATABASE_URL.
+export const prisma = new Proxy({} as PrismaClient, {
+  get(_target, property) {
+    const client = getClient();
+    const value = Reflect.get(client, property, client);
+    return typeof value === "function" ? value.bind(client) : value;
+  },
+});

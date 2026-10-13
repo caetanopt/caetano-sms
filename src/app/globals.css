@@ -1,19 +1,283 @@
 @import "tailwindcss";
 
+/*
+ * Identidade Caetano (Brand Book 04/2026):
+ * - cores primárias: azul profundo #002E5D, ultra branco; neutras: cinza antracite #2E3A46,
+ *   cinza médio #9CAEB8; secundárias: azul cyan #00AEEF, verde eco #49B489, laranja dinâmico
+ *   #FFA931, amarelo liberdade #FFD23F (e respetivas gradações 80/60/40/20 %);
+ * - tipografia secundária: Montserrat (Light/Regular/Medium/Bold); o wordmark nunca é texto.
+ *
+ * As escalas do Tailwind usadas nas páginas (slate, indigo, emerald, amber) são remapeadas para a
+ * paleta da marca: toda a aplicação herda as cores sem reescrever cada página. Os tons de texto
+ * foram ajustados para contraste WCAG AA sobre branco.
+ */
+@theme {
+  --font-sans: "Montserrat Variable", "Montserrat", ui-sans-serif, system-ui, sans-serif;
+
+  --color-brand-deep: #002e5d;
+  --color-brand-deep-80: #33587d;
+  --color-brand-deep-60: #66829e;
+  --color-brand-deep-20: #ccd5df;
+  --color-brand-cyan: #00aeef;
+  --color-brand-cyan-60: #66cef5;
+  --color-brand-cyan-20: #cceffc;
+  --color-brand-sky: #e6f7fd;
+  --color-brand-claim: #2aa8e0;
+  --color-brand-anthracite: #2e3a46;
+  --color-brand-grey: #9caeb8;
+  --color-brand-eco: #49b489;
+  --color-brand-orange: #ffa931;
+  --color-brand-yellow: #ffd23f;
+  --color-brand-white: #fbfcfd;
+
+  /* Neutros: cinza médio → antracite → azul profundo. */
+  --color-slate-50: #f5f8fa;
+  --color-slate-100: #ebeff1;
+  --color-slate-200: #dde4e8;
+  --color-slate-300: #c4ced4;
+  --color-slate-400: #9caeb8;
+  --color-slate-500: #5f6f7b;
+  --color-slate-600: #4f5a65;
+  --color-slate-700: #2e3a46;
+  --color-slate-800: #0d3d6b;
+  --color-slate-900: #002e5d;
+  --color-slate-950: #001f40;
+
+  /* Acento: azul cyan (tons escurecidos para texto legível). */
+  --color-indigo-50: #e6f7fd;
+  --color-indigo-100: #cceffc;
+  --color-indigo-500: #00aeef;
+  --color-indigo-600: #0079b0;
+  --color-indigo-700: #00618d;
+
+  /* Sucesso: verde eco. */
+  --color-emerald-50: #edf8f3;
+  --color-emerald-100: #dbf0e7;
+  --color-emerald-200: #b6e1d0;
+  --color-emerald-600: #2f9a6f;
+  --color-emerald-800: #1d6648;
+  --color-emerald-900: #154d36;
+
+  /* Aviso: amarelo liberdade / laranja dinâmico. */
+  --color-amber-50: #fff8e5;
+  --color-amber-100: #fff0c7;
+  --color-amber-200: #ffe08c;
+  --color-amber-300: #ffd23f;
+  --color-amber-400: #ffa931;
+  --color-amber-700: #9a5a00;
+  --color-amber-800: #7d4800;
+  --color-amber-900: #5f3700;
+
+  --shadow-card: 0 1px 2px rgb(0 46 93 / 0.04), 0 8px 24px -12px rgb(0 46 93 / 0.18);
+  --shadow-lift: 0 2px 4px rgb(0 46 93 / 0.06), 0 18px 40px -16px rgb(0 46 93 / 0.28);
+
+  --animate-enter: enter 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-fade: fade 0.4s ease-out both;
+  --animate-draw: draw 2.4s cubic-bezier(0.65, 0, 0.35, 1) both;
+  --animate-float: float 14s ease-in-out infinite;
+  --animate-shimmer: shimmer 2.6s linear infinite;
+
+  @keyframes enter {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes draw {
+    from {
+      stroke-dashoffset: 1;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+  @keyframes float {
+    0%,
+    100% {
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+    50% {
+      transform: translate3d(2%, -3%, 0) scale(1.05);
+    }
+  }
+  @keyframes shimmer {
+    from {
+      background-position: 200% 0;
+    }
+    to {
+      background-position: -200% 0;
+    }
+  }
+}
+
 :root {
   color-scheme: light;
 }
 
-body {
-  margin: 0;
-  background: #f5f7fb;
-  color: #172033;
-  font-family: Arial, Helvetica, sans-serif;
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background:
+      radial-gradient(1200px 600px at 100% -10%, rgb(0 174 239 / 0.07), transparent 60%),
+      radial-gradient(900px 500px at -10% 110%, rgb(0 46 93 / 0.05), transparent 60%),
+      var(--color-slate-50);
+    color: var(--color-slate-700);
+    font-family: var(--font-sans);
+    font-feature-settings: "tnum" 0;
+  }
+
+  h1,
+  h2,
+  h3 {
+    color: var(--color-brand-deep);
+    letter-spacing: -0.01em;
+  }
+
+  input,
+  textarea,
+  select,
+  button {
+    font: inherit;
+  }
+
+  /* Campos: transições suaves e foco visível com o cyan da marca (acessibilidade). */
+  input:not([type="checkbox"], [type="radio"]),
+  textarea,
+  select {
+    background-color: #fff;
+    transition:
+      border-color 0.18s ease,
+      box-shadow 0.18s ease;
+  }
+  input:not([type="checkbox"], [type="radio"]):hover,
+  textarea:hover,
+  select:hover {
+    border-color: var(--color-slate-400);
+  }
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline: none;
+    border-color: var(--color-brand-cyan);
+    box-shadow: 0 0 0 4px rgb(0 174 239 / 0.16);
+  }
+  input[type="checkbox"],
+  input[type="radio"] {
+    accent-color: var(--color-brand-deep);
+  }
+
+  button,
+  a {
+    transition:
+      background-color 0.18s ease,
+      color 0.18s ease,
+      border-color 0.18s ease,
+      box-shadow 0.2s ease,
+      transform 0.12s ease;
+  }
+  button:not(:disabled):active {
+    transform: translateY(1px) scale(0.99);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-brand-cyan);
+    outline-offset: 2px;
+  }
+
+  table thead th {
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-slate-500);
+  }
+  table tbody tr {
+    transition: background-color 0.15s ease;
+  }
+  table tbody tr:hover {
+    background-color: rgb(0 174 239 / 0.04);
+  }
+
+  ::selection {
+    background: rgb(0 174 239 / 0.22);
+  }
 }
 
-input,
-textarea,
-select,
-button {
-  font: inherit;
+@layer components {
+  /* Superfícies brancas com borda (cartões, secções): sombra suave da marca e elevação no hover. */
+  main :where(.rounded-xl.border.bg-white, .rounded-2xl.border.bg-white) {
+    box-shadow: var(--shadow-card);
+    border-color: rgb(0 46 93 / 0.08);
+    transition:
+      box-shadow 0.25s ease,
+      transform 0.25s ease;
+  }
+  main :where(.card-lift):hover {
+    box-shadow: var(--shadow-lift);
+    transform: translateY(-2px);
+  }
+
+  /* Entrada da página: o conteúdo aparece em cascata. */
+  .page-enter > * {
+    animation: var(--animate-enter);
+  }
+  .page-enter > *:nth-child(2) {
+    animation-delay: 40ms;
+  }
+  .page-enter > *:nth-child(3) {
+    animation-delay: 80ms;
+  }
+  .page-enter > *:nth-child(4) {
+    animation-delay: 120ms;
+  }
+  .page-enter > *:nth-child(n + 5) {
+    animation-delay: 160ms;
+  }
+  .stagger > * {
+    animation: var(--animate-enter);
+  }
+  .stagger > *:nth-child(1) { animation-delay: 60ms; }
+  .stagger > *:nth-child(2) { animation-delay: 100ms; }
+  .stagger > *:nth-child(3) { animation-delay: 140ms; }
+  .stagger > *:nth-child(4) { animation-delay: 180ms; }
+  .stagger > *:nth-child(5) { animation-delay: 220ms; }
+  .stagger > *:nth-child(6) { animation-delay: 260ms; }
+  .stagger > *:nth-child(7) { animation-delay: 300ms; }
+  .stagger > *:nth-child(n + 8) { animation-delay: 340ms; }
+
+  /* Botão principal escuro (bg-slate-900 = azul profundo): brilho subtil no hover. */
+  main :where(button, a).bg-slate-900:hover {
+    box-shadow: 0 10px 24px -12px rgb(0 46 93 / 0.6);
+  }
+}
+
+/* Movimento reduzido: sem animações nem transformações (WCAG 2.3.3). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

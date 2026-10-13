@@ -37,60 +37,182 @@ enum SmsMessageStatus {
   CANCELLED
 }
 
+enum CampaignStatus {
+  DRAFT
+  READY
+  SENDING
+  COMPLETED
+  PARTIAL
+  CANCELLED
+  FAILED
+}
+
+enum CampaignMode {
+  TEST
+  PRODUCTION
+}
+
+enum CampaignRecipientStatus {
+  PENDING
+  PROCESSING
+  ACCEPTED
+  FAILED
+  UNKNOWN
+  SKIPPED
+  CANCELLED
+}
+
 model User {
-  id           String       @id @default(cuid())
-  name         String
-  email        String       @unique
-  passwordHash String
-  role         UserRole     @default(OPERATOR)
-  isActive     Boolean      @default(true)
-  messages     SmsMessage[]
-  auditLogs    AuditLog[]
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
+  id                   String            @id @default(cuid())
+  name                 String
+  email                String            @unique
+  passwordHash         String
+  role                 UserRole          @default(OPERATOR)
+  isActive             Boolean           @default(true)
+  /// Incrementado ao repor/alterar a palavra-passe, desativar ou mudar o perfil: invalida sessões abertas.
+  sessionVersion       Int               @default(0)
+  /// Palavra-passe temporária: troca obrigatória no próximo login.
+  mustChangePassword   Boolean           @default(false)
+  passwordChangedAt    DateTime?
+  lastLoginAt          DateTime?
+  /// Quota diária de partes SMS (envio individual + campanhas que confirmou). null = SMS_USER_DAILY_PARTS_LIMIT; 0 = sem envios.
+  dailyPartsLimit      Int?
+  /// 2FA (TOTP): segredo cifrado (AES-256-GCM), nunca em claro.
+  totpSecretEnc        String?
+  totpEnabledAt        DateTime?
+  /// Último passo TOTP aceite: impede reutilizar o mesmo código.
+  totpLastUsedStep     Int?
+  /// Configuração em curso (confirmada com um código antes de ativar).
+  totpPendingSecretEnc String?
+  totpPendingAt        DateTime?
+  recoveryCodes        MfaRecoveryCode[]
+  messages             SmsMessage[]
+  auditLogs            AuditLog[]
+  consentEvents        ConsentEvent[]
+  templates            SmsTemplate[]
+  campaignsCreated     Campaign[]        @relation("CampaignCreatedBy")
+  campaignsConfirmed   Campaign[]        @relation("CampaignConfirmedBy")
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
 }
 
 model Contact {
-  id            String        @id @default(cuid())
-  name          String
-  phoneE164     String        @unique
-  email         String?
-  consentStatus ConsentStatus @default(UNKNOWN)
-  consentAt     DateTime?
-  consentSource String?
-  optedOutAt    DateTime?
-  notes         String?
-  messages      SmsMessage[]
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  id                 String              @id @default(cuid())
+  name               String
+  phoneE164          String              @unique
+  email              String?
+  consentStatus      ConsentStatus       @default(UNKNOWN)
+  consentAt          DateTime?
+  consentSource      String?
+  optedOutAt         DateTime?
+  notes              String?
+  messages           SmsMessage[]
+  lists              ContactListMember[]
+  consentEvents      ConsentEvent[]
+  campaignRecipients CampaignRecipient[]
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  @@index([consentStatus])
+  @@index([name])
+}
+
+/// Histórico imutável de alterações de consentimento (CLAUDE.md §12).
+model ConsentEvent {
+  id           String        @id @default(cuid())
+  contactId    String
+  contact      Contact       @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  status       ConsentStatus
+  /// Origem do consentimento (ex.: website, loja, contrato, csv-import).
+  source       String
+  /// Finalidade (ex.: marketing, notificações de serviço).
+  purpose      String?
+  /// Texto ou versão do texto de consentimento, quando aplicável.
+  textVersion  String?
+  /// Processo que registou: manual | csv-import | provider.
+  process      String
+  recordedById String?
+  recordedBy   User?         @relation(fields: [recordedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime      @default(now())
+
+  @@index([contactId, createdAt])
+}
+
+/// Suppression list local: números que nunca podem receber SMS, mesmo que o
+/// contacto seja eliminado.
+model SuppressionEntry {
+  id        String   @id @default(cuid())
+  phoneE164 String   @unique
+  /// manual | csv-import | provider
+  source    String
+  createdAt DateTime @default(now())
+}
+
+model ContactList {
+  id          String              @id @default(cuid())
+  name        String              @unique
+  description String?
+  members     ContactListMember[]
+  campaigns   Campaign[]
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+}
+
+model ContactListMember {
+  listId    String
+  list      ContactList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  contactId String
+  contact   Contact     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  createdAt DateTime    @default(now())
+
+  @@id([listId, contactId])
+  @@index([contactId])
 }
 
 model SmsMessage {
-  id                    String           @id @default(cuid())
-  idempotencyKey        String           @unique
-  awsMessageId          String?          @unique
-  contactId             String?
-  contact               Contact?         @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  destinationPhoneE164  String
-  messageType           MessageType
-  body                  String
-  encodingEstimate      String?
-  segmentCountEstimate  Int?
-  status                SmsMessageStatus @default(PENDING)
-  provider              String
-  errorCode             String?
-  errorMessage          String?
-  sentAt                DateTime?
-  deliveredAt           DateTime?
-  failedAt              DateTime?
-  createdById           String
-  createdBy             User             @relation(fields: [createdById], references: [id])
-  createdAt             DateTime         @default(now())
-  updatedAt             DateTime         @updatedAt
+  id                   String             @id @default(cuid())
+  idempotencyKey       String             @unique
+  awsMessageId         String?            @unique
+  contactId            String?
+  contact              Contact?           @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  destinationPhoneE164 String
+  messageType          MessageType
+  body                 String
+  encodingEstimate     String?
+  segmentCountEstimate Int?
+  status               SmsMessageStatus   @default(PENDING)
+  provider             String
+  dryRun               Boolean            @default(false)
+  errorCode            String?
+  errorMessage         String?
+  providerErrorName    String?
+  providerRequestId    String?
+  /// Duração da chamada ao provider (observabilidade, CLAUDE.md §32).
+  providerLatencyMs    Int?
+  sentAt               DateTime?
+  deliveredAt          DateTime?
+  failedAt             DateTime?
+  /// Template usado (o corpo final renderizado fica em `body`).
+  templateId           String?
+  template             SmsTemplate?       @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  campaignId           String?
+  campaign             Campaign?          @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  /// Último evento de entrega aplicado (Configuration Set → SNS).
+  lastEventType        String?
+  lastEventAt          DateTime?
+  /// Retenção (CLAUDE.md §13): texto e número anonimizados nesta data.
+  anonymizedAt         DateTime?
+  deliveryEvents       SmsDeliveryEvent[]
+  createdById          String
+  createdBy            User               @relation(fields: [createdById], references: [id])
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
 
   @@index([createdAt])
   @@index([status])
   @@index([destinationPhoneE164])
+  @@index([campaignId])
+  @@index([createdById, createdAt])
 }
 
 model AuditLog {
@@ -101,8 +223,180 @@ model AuditLog {
   entityType   String
   entityId     String?
   metadataJson Json?
+  ipAddress    String?
   createdAt    DateTime @default(now())
 
   @@index([createdAt])
+  @@index([userId])
+}
+
+/// Tentativas de login (proteção contra força bruta). Email e IP só como HMAC.
+model LoginAttempt {
+  id        String   @id @default(cuid())
+  emailHash String
+  ipHash    String?
+  success   Boolean
+  createdAt DateTime @default(now())
+
+  @@index([emailHash, createdAt])
+  @@index([ipHash, createdAt])
+  @@index([createdAt])
+}
+
+/// Template de SMS com variáveis de uma whitelist explícita (ver src/lib/sms/templates.ts).
+model SmsTemplate {
+  id          String       @id @default(cuid())
+  name        String       @unique
+  body        String
+  messageType MessageType
+  createdById String
+  createdBy   User         @relation(fields: [createdById], references: [id])
+  messages    SmsMessage[]
+  campaigns   Campaign[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+}
+
+/// Campanha de SMS para uma lista (CLAUDE.md §17, §29).
+model Campaign {
+  id                   String              @id @default(cuid())
+  name                 String
+  status               CampaignStatus      @default(DRAFT)
+  messageType          MessageType
+  templateId           String?
+  template             SmsTemplate?        @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  /// Texto livre ou corpo do template (snapshot congelado na confirmação).
+  messageBody          String
+  listId               String?
+  list                 ContactList?        @relation(fields: [listId], references: [id], onDelete: SetNull)
+  /// Valores das variáveis manuais (date, time, place).
+  variablesJson        Json                @default("{}")
+  /// Congelados na confirmação; o processamento para se a configuração atual for diferente.
+  mode                 CampaignMode?
+  provider             String?
+  /// sha256 da origination identity no momento da confirmação (nunca o valor em claro).
+  originationHash      String?
+  confirmedById        String?
+  confirmedBy          User?               @relation("CampaignConfirmedBy", fields: [confirmedById], references: [id])
+  confirmedAt          DateTime?
+  startedAt            DateTime?
+  finishedAt           DateTime?
+  cancelledAt          DateTime?
+  /// Pausa persistida (operador ou sistema). Enquanto definida, nenhum envio é feito.
+  pausedAt             DateTime?
+  pausedById           String?
+  /// Motivo seguro da última paragem automática (modo/origem alterados, erro de conta, …).
+  lastError            String?
+  /// Backoff ao nível da campanha (ex.: throttling da AWS).
+  nextStepAt           DateTime?
+  consecutiveUnknown   Int                 @default(0)
+  /// Ritmo máximo desta campanha (mensagens/min). null = SMS_MAX_SENDS_PER_MINUTE; nunca acima do global (efetivo = mínimo).
+  maxSendsPerMinute    Int?
+  /// Lease de processamento com dono: um único passo de cada vez por campanha.
+  processingLeaseToken String?
+  processingLeaseUntil DateTime?
+  createdById          String
+  createdBy            User                @relation("CampaignCreatedBy", fields: [createdById], references: [id])
+  recipients           CampaignRecipient[]
+  messages             SmsMessage[]
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model CampaignRecipient {
+  id            String                  @id @default(cuid())
+  campaignId    String
+  campaign      Campaign                @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  /// SetNull: eliminar um contacto (RGPD) não apaga o registo da campanha.
+  contactId     String?
+  contact       Contact?                @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  status        CampaignRecipientStatus @default(PENDING)
+  /// OPTED_OUT | NO_CONSENT | INVALID_PHONE | CONTACT_DELETED
+  skipReason    String?
+  /// Texto final congelado na confirmação; apagado quando o destinatário termina (o SmsMessage guarda o enviado).
+  renderedBody  String?
+  segments      Int?
+  /// sha256 do número revisto na confirmação: um número alterado depois não recebe o envio.
+  phoneHash     String?
+  /// Número da tentativa atual; faz parte da chave de idempotência e só aumenta após falha garantidamente não enviada.
+  attempt       Int                     @default(1)
+  /// Retries com backoff já usados (throttling / fornecedor indisponível sem envio).
+  retries       Int                     @default(0)
+  nextAttemptAt DateTime?
+  claimToken    String?
+  claimedAt     DateTime?
+  /// Último SmsMessage deste destinatário.
+  messageId     String?
+  errorCode     String?
+  errorMessage  String?
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+
+  @@unique([campaignId, contactId])
+  @@index([campaignId, status, nextAttemptAt])
+  @@index([status, claimedAt])
+}
+
+/// Eventos de entrega recebidos (idempotência por mensagem SNS). Sem número nem payload bruto.
+model SmsDeliveryEvent {
+  id            String      @id @default(cuid())
+  /// MessageId do envelope SNS: a mesma notificação entregue duas vezes é ignorada.
+  snsMessageId  String      @unique
+  awsMessageId  String
+  smsMessageId  String?
+  smsMessage    SmsMessage? @relation(fields: [smsMessageId], references: [id], onDelete: SetNull)
+  eventType     String
+  messageStatus String?
+  isFinal       Boolean     @default(false)
+  eventAt       DateTime?
+  /// Custo real reportado pela AWS (USD), quando disponível (CLAUDE.md §43).
+  priceUsd      Decimal?    @db.Decimal(12, 6)
+  /// false: evento registado mas sem efeito (mensagem desconhecida ou estado mais antigo).
+  applied       Boolean     @default(false)
+  createdAt     DateTime    @default(now())
+
+  @@index([awsMessageId])
+  @@index([createdAt])
+}
+
+/// Token bucket de partes SMS por identidade de origem e país (CLAUDE.md §19).
+/// A chave contém um hash da identidade e o código do país; nunca números nem ARNs.
+model SendRateBucket {
+  key         String    @id
+  tokens      Float
+  rateFactor  Float     @default(1)
+  /// Último THROTTLED da AWS aplicado a este balde.
+  throttledAt DateTime?
+  updatedAt   DateTime
+}
+
+/// Sessões terminadas por logout (só nesse dispositivo) ou substituídas por um novo login no mesmo
+/// browser: o token (JWT) de 8 h é recusado pelo `jti` até expirar. Sem chave estrangeira: o logout
+/// nunca falha por causa desta tabela. As linhas expiradas há mais de 1 h são removidas por
+/// `pnpm retention --apply`. «Sair de todos os dispositivos» e as ações de administração
+/// (desativar, mudar perfil, repor palavra-passe/2FA) terminam TODAS as sessões através de
+/// `User.sessionVersion`.
+model RevokedSession {
+  jti       String   @id
+  userId    String
+  expiresAt DateTime
+  revokedAt DateTime @default(now())
+
+  @@index([expiresAt])
+  @@index([userId])
+}
+
+/// Códigos de recuperação do 2FA: só o hash (HMAC) é guardado; cada código serve uma vez.
+model MfaRecoveryCode {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String    @unique
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
   @@index([userId])
 }
